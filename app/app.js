@@ -3,20 +3,24 @@
   'use strict';
 
   const { Store, DEFAULT_OUTPUT_DIR, DEFAULT_NUMBER_PREFIX } = window.SZStore;
-  const { formatDate, formatRegNumber } = window.SZDocx;
+  const { addresseeName, formatDate, formatRegNumber, memoBlocks, shortName, splitLines } = window.SZDocx;
 
   // Описание справочников: заголовок, поля (имя, подпись, обязательное), сортировка
   const DIRECTORIES = {
     employees: {
       title: 'Сотрудники',
-      fields: [['full_name', 'ФИО', true], ['phone', 'Номер телефона', false]],
+      // 4-й элемент поля - многострочное (переносы сохраняются и печатаются)
+      fields: [['full_name', 'ФИО полностью', true], ['position', 'Должность', false, true],
+        ['phone', 'Номер телефона', false]],
+      signer: true, // колонка «Подписант»
       order: 'full_name',
     },
     addressees: {
       title: 'Адресаты',
       fields: [['department', 'Отдел', true],
-        ['head_position', 'Должность руководителя', true],
-        ['head_name', 'ФИО руководителя', true]],
+        ['head_position', 'Должность в документе, например «Начальнику отдела»', true],
+        ['head_name', 'ФИО руководителя полностью', true],
+        ['head_name_dative', 'Фамилия И.О. в дательном падеже, например «Петрову П.П.»', true]],
       order: 'department',
     },
     topics: {
@@ -121,32 +125,28 @@
 
   // ---------- Лист служебной записки (как будет в Word) ----------
 
-  function sheetHtml(m, orgName, { preview = false } = {}) {
-    const ph = (value, hint) => (value ? esc(value) : `<span class="ph">${hint}</span>`);
-    const orgLines = String(orgName || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-    const org = orgLines.length
-      ? `<div class="sheet-org">${orgLines.map(esc).join('<br>')}</div>`
-      : (preview ? '<div class="sheet-org sheet-org-empty"><a href="#/dirs/settings">Укажите наименование организации в настройках</a></div>' : '');
-    const paragraphs = String(m.body || '').split(/\r?\n/).filter((l) => l.trim())
-      .map((l) => `<p>${esc(l.trim())}</p>`).join('');
+  // Лист строится из тех же блоков, что и документ Word (SZDocx.memoBlocks)
+  function sheetHtml(m, addressees, { preview = false } = {}) {
+    const t = (x) => (x && typeof x === 'object' ? `<span class="ph">${esc(x.ph)}</span>` : esc(x));
+    const html = memoBlocks(m, addressees, { preview }).map((b) => {
+      if (b.blank) return '<p class="s-p">&nbsp;</p>';
+      const cls = ['s-p'];
+      if (b.align) cls.push(`s-${b.align}`);
+      if (b.firstLine) cls.push('s-indent');
+      if (b.size) cls.push('s-small');
+      if (b.split) {
+        cls.push('s-split');
+        return `<p class="${cls.join(' ')}"><span>${t(b.split[0])}</span><span>${t(b.split[1])}</span></p>`;
+      }
+      const runs = b.runs || [[b.text, b.bold]];
+      return `<p class="${cls.join(' ')}">${runs.map(([x, bold]) => (bold ? `<b>${t(x)}</b>` : t(x))).join('')}</p>`;
+    }).join('');
+    return `<article class="sheet" aria-label="Лист служебной записки">${html}</article>`;
+  }
 
-    return `
-      <article class="sheet" aria-label="Лист служебной записки">
-        ${org}
-        <div class="sheet-to">
-          ${ph(m.addressee_position, 'Должность')}<br>
-          ${ph(m.addressee_department, 'Отдел')}<br>
-          ${ph(m.addressee_name, 'ФИО адресата')}
-        </div>
-        <div class="sheet-title">СЛУЖЕБНАЯ ЗАПИСКА</div>
-        <div class="sheet-num">№ ${esc(m.reg_number)} от ${m.memo_date ? formatDate(m.memo_date) : '__.__.____'}</div>
-        <p class="sheet-topic"><b>Тема:</b> ${ph(m.topic_name, 'тематика работ')}</p>
-        <div class="sheet-body">${paragraphs || '<p><span class="ph">Текст служебной записки</span></p>'}</div>
-        <div class="sheet-sign">
-          Ответственный исполнитель: ${ph(m.executor_name, 'ФИО')}
-          ${m.executor_phone ? `<br>Тел.: ${esc(m.executor_phone)}` : ''}
-        </div>
-      </article>`;
+  // Записки прошлых версий не хранят шапку - показываем текущую из настроек
+  function memoForSheet(memo) {
+    return { ...memo, org_name: memo.org_name ?? store.orgName };
   }
 
   // ---------- Подсказки при наведении ----------
@@ -350,8 +350,9 @@
 
   function renderNew() {
     const topics = store.all('SELECT * FROM topics ORDER BY name');
-    const addressees = store.all('SELECT * FROM addressees ORDER BY department');
+    const addressees = store.all('SELECT * FROM addressees ORDER BY department, head_name');
     const employees = store.all('SELECT * FROM employees ORDER BY full_name');
+    const signer = store.signer;
     const missing = [
       !topics.length && '<a href="#/dirs/topics">тематики работ</a>',
       !addressees.length && '<a href="#/dirs/addressees">адресатов</a>',
@@ -362,19 +363,37 @@
       ${flashHtml()}
       <header class="page-head"><h1>Новая служебная записка</h1></header>
       ${missing.length ? `<div class="flash flash-error">Чтобы создать записку, добавьте в справочники ${missing.join(', ')}.</div>` : ''}
+      ${employees.length && !signer ? '<div class="flash flash-error">Подписант не назначен. Отметьте его галочкой в справочнике <a href="#/dirs/employees">«Сотрудники»</a>.</div>' : ''}
       <div class="compose">
         <form class="panel form" id="memo-form">
           <label class="field"><span>Тематика работ</span>
             <select name="topic_id" required><option value="">Выберите тематику</option>
               ${options(topics, '', (t) => t.name)}</select></label>
-          <label class="field"><span>Кому</span>
-            <select name="addressee_id" required><option value="">Выберите адресата</option>
-              ${options(addressees, '', (a) => `${a.department}: ${a.head_position} ${a.head_name}`)}</select></label>
+          <fieldset class="field picker">
+            <legend>Кому</legend>
+            ${addressees.length > 6 ? '<input type="search" class="picker-filter" id="addr-filter" placeholder="Найти отдел или фамилию" aria-label="Найти адресата">' : ''}
+            <div class="picker-list">
+              ${addressees.map((a) => `
+                <label class="pick" data-text="${esc(`${a.department} ${a.head_position} ${a.head_name}`.toLocaleLowerCase('ru'))}">
+                  <input type="checkbox" value="${a.id}">
+                  <span class="pick-text">${esc(a.department)}<small>${esc(`${a.head_position} ${addresseeName(a)}`)}</small></span>
+                  <span class="pick-order" aria-hidden="true"></span>
+                </label>`).join('')}
+            </div>
+            <small>Можно выбрать несколько. В записке адресаты идут в порядке выбора.</small>
+          </fieldset>
           <label class="field field-date"><span>Дата</span>
             <input type="date" name="memo_date" value="${today()}" required></label>
           <label class="field"><span>Текст</span>
-            <textarea name="body" rows="10" required placeholder="Каждый абзац с новой строки"></textarea></label>
-          <label class="field"><span>Ответственный исполнитель</span>
+            <textarea name="body" rows="9" required placeholder="Каждый абзац с новой строки"></textarea></label>
+          <label class="field"><span>Приложение <i>необязательно</i></span>
+            <textarea name="attachment" rows="2" placeholder="Например: смета на 2 л. в 1 экз."></textarea></label>
+          <div class="field"><span>Подписант</span>
+            <div class="signer-line">${signer
+              ? `${esc(shortName(signer.full_name))}<small class="pre">${esc(signer.position) || 'должность не указана'}</small>`
+              : '<small>не назначен</small>'}
+              <a href="#/dirs/employees">Изменить</a></div></div>
+          <label class="field"><span>Исполнитель</span>
             <select name="executor_id" required><option value="">Выберите сотрудника</option>
               ${options(employees, '', (e) => e.full_name + (e.phone ? `, ${e.phone}` : ''))}</select></label>
           <div class="form-foot">
@@ -386,24 +405,44 @@
       </div>`;
 
     const form = document.getElementById('memo-form');
-    const byId = (rows, id) => rows.find((r) => String(r.id) === id) || {};
+    const byId = (rows, id) => rows.find((r) => String(r.id) === String(id)) || {};
+    let chosen = []; // id адресатов в порядке выбора
+
+    function updatePicker() {
+      for (const box of form.querySelectorAll('.pick input')) {
+        const pos = chosen.indexOf(box.value);
+        box.closest('.pick').querySelector('.pick-order').textContent = pos >= 0 ? pos + 1 : '';
+      }
+    }
 
     function updatePreview() {
       const d = Object.fromEntries(new FormData(form));
       const year = /^\d{4}/.test(d.memo_date) ? Number(d.memo_date.slice(0, 4)) : new Date().getFullYear();
       const reg = formatRegNumber(store.numberPrefix, nextNumber(year), year);
-      const t = byId(topics, d.topic_id);
-      const a = byId(addressees, d.addressee_id);
-      const e = byId(employees, d.executor_id);
+      const executor = byId(employees, d.executor_id);
       document.getElementById('preview').innerHTML = sheetHtml({
-        reg_number: reg, memo_date: d.memo_date, topic_name: t.name, body: d.body,
-        addressee_position: a.head_position, addressee_department: a.department, addressee_name: a.head_name,
-        executor_name: e.full_name, executor_phone: e.phone,
-      }, store.orgName, { preview: true });
-      document.getElementById('number-note').textContent =
-        `Номер ${reg} закрепится при сохранении.`;
+        reg_number: reg, memo_date: d.memo_date, topic_name: byId(topics, d.topic_id).name,
+        body: d.body, attachment: d.attachment, org_name: store.orgName, city: store.city,
+        signer_name: signer && signer.full_name, signer_position: signer && signer.position,
+        executor_name: executor.full_name, executor_phone: executor.phone,
+      }, chosen.map((id) => byId(addressees, id)), { preview: true });
+      document.getElementById('number-note').textContent = `Номер ${reg} закрепится при сохранении.`;
     }
 
+    form.addEventListener('change', (ev) => {
+      if (ev.target.matches('.pick input')) {
+        const id = ev.target.value;
+        chosen = ev.target.checked ? [...chosen, id] : chosen.filter((x) => x !== id);
+        updatePicker();
+      }
+    });
+    const filter = document.getElementById('addr-filter');
+    if (filter) {
+      filter.addEventListener('input', () => {
+        const q = filter.value.trim().toLocaleLowerCase('ru');
+        for (const pick of form.querySelectorAll('.pick')) pick.hidden = q && !pick.dataset.text.includes(q);
+      });
+    }
     form.addEventListener('input', updatePreview);
     form.addEventListener('change', updatePreview);
     updatePreview();
@@ -411,33 +450,54 @@
     form.onsubmit = (ev) => {
       ev.preventDefault();
       const data = Object.fromEntries(new FormData(form));
-      busy(form.querySelector('button[type=submit]'), () => createMemo(data));
+      busy(form.querySelector('button[type=submit]'), () => createMemo(data, chosen));
     };
   }
 
-  async function createMemo(data) {
+  async function createMemo(data, addresseeIds) {
     const body = data.body.trim();
+    if (!addresseeIds.length) throw new Error('Выберите хотя бы одного адресата.');
     if (!body) throw new Error('Заполните текст служебной записки.');
     if (!/^\d{4}-\d{2}-\d{2}$/.test(data.memo_date)) throw new Error('Укажите дату.');
     const year = Number(data.memo_date.slice(0, 4));
 
     const memoId = await store.write((s) => {
       const topic = s.one('SELECT * FROM topics WHERE id = ?', [data.topic_id]);
-      const addressee = s.one('SELECT * FROM addressees WHERE id = ?', [data.addressee_id]);
       const executor = s.one('SELECT * FROM employees WHERE id = ?', [data.executor_id]);
-      if (!topic || !addressee || !executor) {
+      const signer = s.signer;
+      const addrs = addresseeIds.map((id) => s.one('SELECT * FROM addressees WHERE id = ?', [id]));
+      if (!signer) {
+        throw new Error('Подписант не назначен. Отметьте его галочкой в справочнике «Сотрудники».');
+      }
+      if (!topic || !executor || addrs.some((a) => !a)) {
         throw new Error('Выбранную запись справочника кто-то удалил. Обновите страницу и выберите заново.');
+      }
+      const noDative = addrs.find((a) => !a.head_name_dative);
+      if (noDative) {
+        throw new Error(`У адресата ${noDative.head_name} не заполнена Фамилия И.О. в дательном падеже. Заполните её в справочнике «Адресаты».`);
+      }
+      if (!signer.position) {
+        throw new Error(`У подписанта ${signer.full_name} не указана должность. Заполните её в справочнике «Сотрудники».`);
       }
       // Номер считается под блокировкой, поэтому у двух пользователей он не совпадёт
       const number = s.one('SELECT COALESCE(MAX(number), 0) + 1 AS n FROM memos WHERE year = ?', [year]).n;
-      return s.run(
+      // Колонки addressee_* - сводка для поиска; сами адресаты - в memo_addressees
+      const joined = (key) => addrs.map((a) => a[key]).join('; ');
+      const id = s.run(
         `INSERT INTO memos (number, year, reg_number, memo_date, topic_id, topic_name,
            addressee_id, addressee_department, addressee_position, addressee_name,
-           body, executor_id, executor_name, executor_phone)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           body, attachment, signer_id, signer_name, signer_position,
+           executor_id, executor_name, executor_phone, city, org_name)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [number, year, formatRegNumber(s.numberPrefix, number, year), data.memo_date,
-          topic.id, topic.name, addressee.id, addressee.department, addressee.head_position,
-          addressee.head_name, body, executor.id, executor.full_name, executor.phone]);
+          topic.id, topic.name, addrs[0].id, joined('department'), joined('head_position'),
+          joined('head_name'), body, data.attachment.trim(), signer.id, signer.full_name,
+          signer.position, executor.id, executor.full_name, executor.phone, s.city, s.orgName]);
+      addrs.forEach((a, i) => s.run(
+        `INSERT INTO memo_addressees (memo_id, ord, addressee_id, department, head_position, head_name,
+           head_name_dative) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [id, i, a.id, a.department, a.head_position, a.head_name, a.head_name_dative]));
+      return id;
     });
 
     const memo = store.one('SELECT * FROM memos WHERE id = ?', [memoId]);
@@ -454,6 +514,12 @@
 
   // ---------- Реестр ----------
 
+  function addresseesCell(list) {
+    const shown = list.slice(0, 2).map((a) =>
+      `<div>${esc(a.department)}<div class="sub">${esc(shortName(a.head_name))}</div></div>`).join('');
+    return shown + (list.length > 2 ? `<div class="sub">и ещё ${list.length - 2}</div>` : '');
+  }
+
   function renderList() {
     const { q, topic, year } = listFilter;
     let sql = 'SELECT * FROM memos WHERE 1=1';
@@ -465,7 +531,12 @@
       // LIKE в SQLite не учитывает регистр кириллицы, поэтому ищем в JS
       const needle = q.toLocaleLowerCase('ru');
       memos = memos.filter((m) => [m.reg_number, m.topic_name, m.addressee_department,
-        m.addressee_name, m.executor_name, m.body].join(' ').toLocaleLowerCase('ru').includes(needle));
+        m.addressee_name, m.executor_name, m.signer_name, m.body, m.attachment]
+        .join(' ').toLocaleLowerCase('ru').includes(needle));
+    }
+    const addrMap = {};
+    for (const a of store.all('SELECT * FROM memo_addressees ORDER BY memo_id, ord')) {
+      (addrMap[a.memo_id] ||= []).push(a);
     }
     const topics = store.all('SELECT * FROM topics ORDER BY name');
     const years = store.all('SELECT DISTINCT year FROM memos ORDER BY year DESC').map((r) => r.year);
@@ -495,7 +566,7 @@
               <td class="num"><a href="#/memo/${m.id}">${esc(m.reg_number)}</a></td>
               <td class="nowrap">${formatDate(m.memo_date)}</td>
               <td>${esc(m.topic_name)}</td>
-              <td>${esc(m.addressee_department)}<div class="sub">${esc(m.addressee_name)}</div></td>
+              <td>${addresseesCell(addrMap[m.id] || [])}</td>
               <td>${esc(m.executor_name)}</td>
               <td class="row-actions"><button class="btn small" data-download="${m.id}">Word</button></td>
             </tr>`).join('')}
@@ -541,6 +612,7 @@
       main.innerHTML = `${flashHtml()}<div class="empty"><p>Такой записки нет в реестре.</p><a class="btn" href="#/list">Открыть реестр</a></div>`;
       return;
     }
+    const addressees = store.memoAddressees(id);
 
     main.innerHTML = `
       ${flashHtml()}
@@ -555,7 +627,8 @@
           <dl class="details">
             <dt>Дата</dt><dd>${formatDate(memo.memo_date)}</dd>
             <dt>Тематика</dt><dd>${esc(memo.topic_name)}</dd>
-            <dt>Кому</dt><dd>${esc(memo.addressee_department)}<div class="sub">${esc(memo.addressee_position)} ${esc(memo.addressee_name)}</div></dd>
+            <dt>Кому</dt><dd>${addressees.map((a) => `<div>${esc(a.department)}<div class="sub">${esc(a.head_position)} ${esc(addresseeName(a))}</div></div>`).join('')}</dd>
+            ${memo.signer_name ? `<dt>Подписант</dt><dd>${esc(shortName(memo.signer_name))}<div class="sub pre">${esc(memo.signer_position)}</div></dd>` : ''}
             <dt>Исполнитель</dt><dd>${esc(memo.executor_name)}${memo.executor_phone ? `<div class="sub">${esc(memo.executor_phone)}</div>` : ''}</dd>
             <dt>Создана</dt><dd>${formatDate(memo.created_at.slice(0, 10))} в ${esc(memo.created_at.slice(11, 16))}</dd>
             <dt>Документ</dt><dd id="file-status" class="sub">проверяем…</dd>
@@ -566,7 +639,7 @@
             <button class="btn danger" id="delete">Удалить из реестра</button>
           </div>
         </aside>
-        <div class="sheet-wrap">${sheetHtml(memo, store.orgName)}</div>
+        <div class="sheet-wrap">${sheetHtml(memoForSheet(memo), addressees)}</div>
       </div>`;
 
     document.getElementById('download').onclick = () => downloadMemo(id).catch(showError);
@@ -578,7 +651,10 @@
     document.getElementById('delete').onclick = (ev) => {
       if (!confirm(`Удалить ${memo.reg_number} из реестра? Документ Word в папке останется.`)) return;
       busy(ev.target, async () => {
-        await store.write((s) => s.run('DELETE FROM memos WHERE id = ?', [id]));
+        await store.write((s) => {
+          s.run('DELETE FROM memo_addressees WHERE memo_id = ?', [id]);
+          s.run('DELETE FROM memos WHERE id = ?', [id]);
+        });
         flash(`${memo.reg_number} удалена из реестра. Документ Word остался в папке.`);
         location.hash = '#/list';
       });
@@ -647,9 +723,16 @@
     }).join('')}</ol>`;
   }
 
-  function groupCounts(column, year, limit = 7) {
-    const rows = store.all(`SELECT ${column} AS label, COUNT(*) AS n FROM memos WHERE year = ?
-      GROUP BY ${column} ORDER BY n DESC, label`, [year]);
+  // Адресатов у записки может быть несколько, поэтому они считаются по memo_addressees
+  const GROUP_QUERIES = {
+    topic: 'SELECT topic_name AS label, COUNT(*) AS n FROM memos WHERE year = ? GROUP BY label',
+    executor: 'SELECT executor_name AS label, COUNT(*) AS n FROM memos WHERE year = ? GROUP BY label',
+    addressee: `SELECT a.department AS label, COUNT(*) AS n FROM memo_addressees a
+      JOIN memos m ON m.id = a.memo_id WHERE m.year = ? GROUP BY label`,
+  };
+
+  function groupCounts(kind, year, limit = 7) {
+    const rows = store.all(`${GROUP_QUERIES[kind]} ORDER BY n DESC, label`, [year]);
     if (rows.length <= limit + 1) return rows;
     const rest = rows.slice(limit).reduce((s, r) => s + r.n, 0);
     return [...rows.slice(0, limit), { label: `Остальные (${rows.length - limit})`, n: rest }];
@@ -709,9 +792,9 @@
       </section>
 
       <div class="stats-grid">
-        <section class="panel"><h2>По тематикам</h2>${barList(groupCounts('topic_name', year), total)}</section>
-        <section class="panel"><h2>По адресатам</h2>${barList(groupCounts('addressee_department', year), total)}</section>
-        <section class="panel"><h2>По исполнителям</h2>${barList(groupCounts('executor_name', year), total)}</section>
+        <section class="panel"><h2>По тематикам</h2>${barList(groupCounts('topic', year), total)}</section>
+        <section class="panel"><h2>По адресатам</h2>${barList(groupCounts('addressee', year), total)}</section>
+        <section class="panel"><h2>По исполнителям</h2>${barList(groupCounts('executor', year), total)}</section>
       </div>`
       : `<div class="empty"><p>За ${year} год служебных записок нет.</p><a class="btn primary" href="#/new">Создать СЗ</a></div>`}`;
 
@@ -729,6 +812,40 @@
       `<a href="#/dirs/${k}" class="${k === kind ? 'active' : ''}" ${k === kind ? 'aria-current="page"' : ''}>${t}</a>`).join('')}</nav>`;
   }
 
+  // Подписант один: пока галочка стоит у одного сотрудника, у остальных она заблокирована
+  function signerCell(row, current) {
+    const locked = current && current.id !== row.id;
+    const title = locked ? `Подписант уже назначен: ${shortName(current.full_name)}. Сначала снимите галочку у него.` : '';
+    return `<td class="c"><input type="checkbox" class="signer-box" data-signer="${row.id}"
+      ${row.is_signer ? 'checked' : ''} ${locked ? `disabled title="${esc(title)}"` : ''}
+      aria-label="Подписант: ${esc(row.full_name)}"></td>`;
+  }
+
+  async function setSigner(id, on) {
+    const hash = location.hash;
+    try {
+      await store.write((s) => {
+        if (on) {
+          const current = s.signer;
+          if (current && current.id !== id) {
+            throw new Error(`Подписант уже назначен: ${current.full_name}. Сначала снимите галочку у него.`);
+          }
+          const emp = s.one('SELECT * FROM employees WHERE id = ?', [id]);
+          if (!emp) throw new Error('Сотрудник удалён. Обновите страницу.');
+          if (!emp.position) {
+            throw new Error(`У сотрудника ${emp.full_name} не указана должность: она печатается рядом с подписью. Сначала заполните её.`);
+          }
+        }
+        s.run('UPDATE employees SET is_signer = ? WHERE id = ?', [on ? 1 : 0, id]);
+      });
+      flash(on ? 'Подписант назначен. Он будет подставляться в новые записки.' : 'Подписант снят.');
+    } catch (e) {
+      console.error(e);
+      flash(e.message, 'error');
+    }
+    if (location.hash === hash) render();
+  }
+
   function renderDirs(kind) {
     if (kind === 'settings') return renderSettings();
     const spec = DIRECTORIES[kind];
@@ -743,9 +860,11 @@
       <form class="panel form dir-form ${editRow ? 'is-editing' : ''}" id="dir-form">
         <h2>${editRow ? 'Изменить запись' : 'Добавить запись'}</h2>
         <div class="fields">
-          ${spec.fields.map(([name, label, required]) => `
+          ${spec.fields.map(([name, label, required, multiline]) => `
             <label class="field"><span>${label}${required ? '' : ' <i>необязательно</i>'}</span>
-              <input type="text" name="${name}" value="${esc(editRow ? editRow[name] : '')}" ${required ? 'required' : ''}></label>`).join('')}
+              ${multiline
+                ? `<textarea name="${name}" rows="2" ${required ? 'required' : ''} placeholder="Enter - перенос строки">${esc(editRow ? editRow[name] : '')}</textarea>`
+                : `<input type="text" name="${name}" value="${esc(editRow ? editRow[name] : '')}" ${required ? 'required' : ''}>`}</label>`).join('')}
           <div class="field-actions">
             <button type="submit" class="btn primary">${editRow ? 'Сохранить' : 'Добавить'}</button>
             ${editRow ? '<button type="button" class="btn ghost" id="cancel">Отмена</button>' : ''}
@@ -754,10 +873,11 @@
       </form>
       ${rows.length ? `
         <div class="panel table-wrap"><table class="table">
-          <thead><tr>${spec.fields.map(([, label]) => `<th>${label}</th>`).join('')}<th><span class="sr">Действия</span></th></tr></thead>
+          <thead><tr>${spec.fields.map(([, label]) => `<th>${label}</th>`).join('')}${spec.signer ? '<th class="c">Подписант</th>' : ''}<th><span class="sr">Действия</span></th></tr></thead>
           <tbody>${rows.map((r) => `
             <tr class="${editRow && editRow.id === r.id ? 'editing' : ''}">
-              ${spec.fields.map(([name]) => `<td>${esc(r[name]) || '<span class="muted">—</span>'}</td>`).join('')}
+              ${spec.fields.map(([name, , , multiline]) => `<td class="${multiline ? 'pre' : ''}">${esc(r[name]) || '<span class="muted">—</span>'}</td>`).join('')}
+              ${spec.signer ? signerCell(r, rows.find((x) => x.is_signer)) : ''}
               <td class="row-actions">
                 <button class="btn small ghost" data-edit="${r.id}">Изменить</button>
                 <button class="btn small ghost danger" data-delete="${r.id}">Удалить</button>
@@ -772,8 +892,9 @@
     form.onsubmit = (ev) => {
       ev.preventDefault();
       const values = {};
-      for (const [name, label, required] of spec.fields) {
-        values[name] = (form.elements[name].value || '').trim();
+      for (const [name, label, required, multiline] of spec.fields) {
+        const raw = form.elements[name].value || '';
+        values[name] = multiline ? splitLines(raw).join('\n') : raw.trim();
         if (required && !values[name]) {
           flash(`Заполните поле «${label}».`, 'error');
           showFlashes();
@@ -805,6 +926,9 @@
     for (const b of main.querySelectorAll('[data-edit]')) {
       b.onclick = () => { editId = Number(b.dataset.edit); render(); };
     }
+    for (const box of main.querySelectorAll('[data-signer]')) {
+      box.onchange = () => setSigner(Number(box.dataset.signer), box.checked);
+    }
     for (const b of main.querySelectorAll('[data-delete]')) {
       b.onclick = () => {
         if (!confirm('Удалить запись? В уже созданных записках данные сохранятся.')) return;
@@ -825,7 +949,10 @@
       <form class="panel form settings" id="settings-form">
         <label class="field"><span>Наименование организации</span>
           <textarea name="org_name" rows="3" placeholder="Каждая строка шапки с новой строки">${esc(store.orgName)}</textarea>
-          <small>Печатается в шапке каждой служебной записки по центру, полужирным.</small></label>
+          <small>Печатается в шапке по центру полужирным. Переносы строк сохраняются как введены.</small></label>
+        <label class="field field-short"><span>Город</span>
+          <input type="text" name="city" value="${esc(store.city)}" placeholder="Например, Москва">
+          <small>Печатается под заголовком «СЛУЖЕБНАЯ ЗАПИСКА».</small></label>
         <label class="field field-short"><span>Префикс номера</span>
           <input type="text" name="number_prefix" value="${esc(store.numberPrefix)}" required maxlength="20">
           <small id="prefix-example"></small></label>
@@ -863,6 +990,7 @@
       busy(form.querySelector('button'), async () => {
         await store.write((s) => {
           s.setSetting('org_name', orgName);
+          s.setSetting('city', form.elements.city.value.trim());
           s.setSetting('number_prefix', prefix);
           s.setSetting('output_dir', outputDir);
         });

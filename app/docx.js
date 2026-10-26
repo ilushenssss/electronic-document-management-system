@@ -6,15 +6,116 @@
   const FONT_SIZE = 28; // в полупунктах: 14 pt
   const CM = 567; // твипов в сантиметре
 
+  const TEXT_WIDTH = 11906 - 3 * CM - Math.round(1.5 * CM); // ширина текста между полями
+  const MONTHS_GEN = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля',
+    'августа', 'сентября', 'октября', 'ноября', 'декабря'];
+
   function formatDate(iso) {
     const [y, m, d] = iso.split('-');
     return `${d}.${m}.${y}`;
+  }
+
+  // "14" января 2026 г.
+  function formatLongDate(iso) {
+    const [y, m, d] = iso.split('-');
+    return `"${d}" ${MONTHS_GEN[Number(m) - 1]} ${y} г.`;
   }
 
   // НТЦ-0001-26: префикс, порядковый номер с ведущими нулями, две цифры года
   function formatRegNumber(prefix, number, year) {
     return `${prefix}-${String(number).padStart(4, '0')}-${String(year).slice(-2)}`;
   }
+
+  function splitLines(text) {
+    return String(text || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  }
+
+  // Иванов Иван Иванович -> Иванов И.И.
+  function shortName(full) {
+    const parts = String(full || '').trim().split(/\s+/).filter(Boolean);
+    if (parts.length < 2) return parts.join(' ');
+    if (parts[1].includes('.')) return `${parts[0]} ${parts.slice(1).join('')}`;
+    return `${parts[0]} ${parts.slice(1).map((p) => `${p[0].toUpperCase()}.`).join('')}`;
+  }
+
+  // Фамилия И.О. адресата в дательном падеже (заполняется в справочнике вручную).
+  // У адресатов, внесённых до появления этого поля, - краткая форма из полного ФИО.
+  function addresseeName(a) {
+    return a.head_name_dative || shortName(a.head_name);
+  }
+
+  // Обращение: по имени и отчеству одного адресата, «Уважаемые Коллеги!» для нескольких.
+  // Род определяется по окончанию отчества.
+  function greeting(addressees) {
+    if (addressees.length > 1) return 'Уважаемые Коллеги!';
+    if (!addressees.length) return '';
+    const parts = String(addressees[0].head_name || '').trim().split(/\s+/);
+    if (parts.length < 3 || parts.some((p) => p.includes('.'))) return 'Уважаемый(ая) коллега!';
+    const patronymic = parts[2].toLowerCase();
+    const word = /(вич|ич|оглы|улы)$/.test(patronymic) ? 'Уважаемый'
+      : /(вна|чна|кызы|гызы)$/.test(patronymic) ? 'Уважаемая' : 'Уважаемый(ая)';
+    return `${word} ${parts[1]} ${parts[2]}!`;
+  }
+
+  // Содержимое записки как список блоков. По нему строятся и документ Word,
+  // и лист на экране, поэтому они не расходятся.
+  //   { text | runs, bold, align, firstLine, size } - абзац
+  //   { split: [слева, справа], size }                 - строка с двумя краями
+  //   { blank: true }                                  - пустая строка
+  // В режиме preview незаполненные значения заменяются объектами { ph: 'подсказка' }.
+  function memoBlocks(m, addressees, { preview = false } = {}) {
+    const v = (value, hint) => value || (preview ? { ph: hint } : '');
+    // Смысловые блоки по порядку; между ними ровно одна пустая строка
+    const sections = [];
+    const add = (...blocks) => { if (blocks.length) sections.push(blocks); };
+
+    const org = splitLines(m.org_name);
+    if (org.length) add(...org.map((line) => ({ text: line, bold: true, align: 'center' })));
+    else if (preview) add({ text: { ph: 'Наименование организации — укажите в настройках' }, align: 'center' });
+
+    add({ text: 'СЛУЖЕБНАЯ ЗАПИСКА', bold: true, align: 'center' });
+
+    if (m.city) add({ text: m.city, align: 'center' });
+    else if (preview) add({ text: { ph: 'Город — укажите в настройках' }, align: 'center' });
+
+    add({ split: [m.memo_date ? formatLongDate(m.memo_date) : v('', 'дата'), `№${m.reg_number}`] });
+
+    // Адресаты: должность и Фамилия И.О. отдельными строками
+    if (addressees.length) {
+      add(...addressees.flatMap((a) => [
+        { text: a.head_position, align: 'right' }, { text: addresseeName(a), align: 'right' }]));
+    } else if (preview) {
+      add({ text: { ph: 'Должность адресата' }, align: 'right' }, { text: { ph: 'Фамилия И.О.' }, align: 'right' });
+    }
+
+    add({ text: v(m.topic_name, 'Тематика работ') });
+
+    add({ text: greeting(addressees) || v('', 'Уважаемый Имя Отчество!'), align: 'center' });
+
+    const body = splitLines(m.body);
+    if (body.length) add(...body.map((line) => ({ text: line, align: 'both', firstLine: true })));
+    else if (preview) add({ text: { ph: 'Текст служебной записки' }, align: 'both', firstLine: true });
+
+    const attachment = splitLines(m.attachment);
+    if (attachment.length) {
+      add(...attachment.map((line, i) => ({ runs: [[i ? '' : 'Приложение: '], [line]], align: 'both' })));
+    }
+
+    // Должность подписанта может быть в несколько строк; Фамилия И.О. - справа на последней
+    if (m.signer_name || preview) {
+      const position = splitLines(m.signer_position);
+      const name = v(shortName(m.signer_name), 'Фамилия И.О.');
+      add(...position.slice(0, -1).map((line) => ({ text: line })),
+        { split: [position.length ? position[position.length - 1] : v('', 'Должность подписанта'), name] });
+    }
+
+    const executor = [{ text: v(m.executor_name && `Исп. ${shortName(m.executor_name)}`, 'Исп. Фамилия И.О.'), size: 10 }];
+    if (m.executor_phone) executor.push({ text: `Тел. ${m.executor_phone}`, size: 10 });
+    add(...executor);
+
+    return sections.flatMap((blocks, i) => (i ? [{ blank: true }, ...blocks] : blocks));
+  }
+
 
   function xml(text) {
     return String(text)
@@ -24,62 +125,39 @@
       .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '');
   }
 
-  function run(text, bold) {
-    return `<w:r>${bold ? '<w:rPr><w:b/><w:bCs/></w:rPr>' : ''}` +
-      `<w:t xml:space="preserve">${xml(text)}</w:t></w:r>`;
+  // Размер задаётся у каждого фрагмента явно, чтобы не зависеть от настроек Word
+  function run(text, bold, size = FONT_SIZE / 2) {
+    const rPr = (bold ? '<w:b/><w:bCs/>' : '') +
+      `<w:sz w:val="${size * 2}"/><w:szCs w:val="${size * 2}"/>`;
+    const content = text === '\t' ? '<w:tab/>' : `<w:t xml:space="preserve">${xml(text)}</w:t>`;
+    return `<w:r>${rPr ? `<w:rPr>${rPr}</w:rPr>` : ''}${content}</w:r>`;
   }
 
-  // runs: строка или массив [текст, жирный]
-  function para(runs, opts = {}) {
+  function blockXml(blk) {
     const pPr = [];
-    if (opts.after) pPr.push(`<w:spacing w:after="${opts.after}"/>`);
-    if (opts.left || opts.firstLine) {
-      pPr.push(`<w:ind${opts.left ? ` w:left="${opts.left}"` : ''}` +
-        `${opts.firstLine ? ` w:firstLine="${opts.firstLine}"` : ''}/>`);
+    let runs;
+    if (blk.blank) {
+      runs = [];
+    } else if (blk.split) {
+      // Правый край - через табуляцию по правому краю текста
+      pPr.push(`<w:tabs><w:tab w:val="right" w:pos="${TEXT_WIDTH}"/></w:tabs>`);
+      runs = [[blk.split[0]], ['\t'], [blk.split[1]]];
+    } else {
+      runs = blk.runs || [[blk.text, blk.bold]];
     }
-    if (opts.borderBottom) {
-      pPr.push('<w:pBdr><w:bottom w:val="single" w:sz="12" w:space="6" w:color="000000"/></w:pBdr>');
-    }
-    if (opts.align) pPr.push(`<w:jc w:val="${opts.align}"/>`);
-    const list = typeof runs === 'string' ? [[runs, opts.bold]] : runs;
-    return `<w:p>${pPr.length ? `<w:pPr>${pPr.join('')}</w:pPr>` : ''}` +
-      list.filter(([t]) => t).map(([t, b]) => run(t, b)).join('') + '</w:p>';
+    if (blk.firstLine) pPr.push(`<w:ind w:firstLine="${Math.round(1.25 * CM)}"/>`);
+    if (blk.align) pPr.push(`<w:jc w:val="${blk.align}"/>`);
+    const size = blk.size || FONT_SIZE / 2;
+    const rPrDefault = `<w:rPr><w:sz w:val="${size * 2}"/><w:szCs w:val="${size * 2}"/></w:rPr>`;
+    return `<w:p>${pPr.length || rPrDefault ? `<w:pPr>${pPr.join('')}${rPrDefault}</w:pPr>` : ''}` +
+      runs.filter(([t]) => t).map(([t, b]) => run(t, b, size)).join('') + '</w:p>';
   }
 
-  function documentXml(memo, orgName) {
-    const body = [];
-
-    // Шапка: наименование организации, каждая строка по центру, снизу черта
-    const orgLines = String(orgName || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-    orgLines.forEach((line, i) => {
-      const last = i === orgLines.length - 1;
-      body.push(para(line, { bold: true, align: 'center', borderBottom: last, after: last ? 480 : 0 }));
-    });
-
-    for (const line of [memo.addressee_position, memo.addressee_department,
-      memo.addressee_name]) {
-      body.push(para(line, { left: Math.round(9.5 * CM) }));
-    }
-    body.push(para(''), para(''));
-    body.push(para('СЛУЖЕБНАЯ ЗАПИСКА', { bold: true, align: 'center' }));
-    body.push(para(`№ ${memo.reg_number} от ${formatDate(memo.memo_date)}`,
-      { align: 'center', after: 240 }));
-    body.push(para([['Тема: ', true], [memo.topic_name, false]], { after: 240 }));
-
-    for (const line of memo.body.split(/\r?\n/)) {
-      if (line.trim()) {
-        body.push(para(line.trim(),
-          { align: 'both', firstLine: Math.round(1.25 * CM) }));
-      }
-    }
-
-    body.push(para(''), para(''));
-    body.push(para(`Ответственный исполнитель: ${memo.executor_name}`));
-    if (memo.executor_phone) body.push(para(`Тел.: ${memo.executor_phone}`));
-
+  function documentXml(memo, addressees) {
+    const body = memoBlocks(memo, addressees).map(blockXml).join('');
     return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
       '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">' +
-      `<w:body>${body.join('')}` +
+      `<w:body>${body}` +
       '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/>' +
       `<w:pgMar w:top="${2 * CM}" w:right="${Math.round(1.5 * CM)}" ` +
       `w:bottom="${2 * CM}" w:left="${3 * CM}" w:header="708" w:footer="708" w:gutter="0"/>` +
@@ -95,7 +173,9 @@
     '</w:rPr></w:rPrDefault><w:pPrDefault><w:pPr>' +
     '<w:spacing w:after="0" w:line="240" w:lineRule="auto"/>' +
     '</w:pPr></w:pPrDefault></w:docDefaults>' +
-    '<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style>' +
+    '<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/>' +
+    `<w:rPr><w:rFonts w:ascii="${FONT}" w:hAnsi="${FONT}" w:eastAsia="${FONT}" w:cs="${FONT}"/>` +
+    `<w:sz w:val="${FONT_SIZE}"/><w:szCs w:val="${FONT_SIZE}"/></w:rPr></w:style>` +
     '</w:styles>';
 
   const CONTENT_TYPES_XML =
@@ -203,7 +283,9 @@
     return zip([
       ['[Content_Types].xml', CONTENT_TYPES_XML],
       ['_rels/.rels', ROOT_RELS_XML],
-      ['word/document.xml', documentXml(memo, opts.orgName)],
+      // Записки прошлых версий не хранят шапку - берётся текущая из настроек
+      ['word/document.xml', documentXml({ ...memo, org_name: memo.org_name ?? opts.orgName },
+        opts.addressees || [])],
       ['word/_rels/document.xml.rels', DOCUMENT_RELS_XML],
       ['word/styles.xml', STYLES_XML],
     ]);
@@ -220,5 +302,8 @@
     return safeName(memo.reg_number);
   }
 
-  root.SZDocx = { buildDocx, fileBaseName, formatDate, formatRegNumber };
+  root.SZDocx = {
+    addresseeName, buildDocx, fileBaseName, formatDate, formatLongDate, formatRegNumber, memoBlocks,
+    shortName, splitLines,
+  };
 })(typeof window !== 'undefined' ? window : globalThis);

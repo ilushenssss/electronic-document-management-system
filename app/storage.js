@@ -56,19 +56,50 @@
       key   TEXT PRIMARY KEY,
       value TEXT NOT NULL
     );
+    -- Адресаты записки (их может быть несколько), в порядке выбора
+    CREATE TABLE IF NOT EXISTS memo_addressees (
+      memo_id       INTEGER NOT NULL,
+      ord           INTEGER NOT NULL,
+      addressee_id  INTEGER,
+      department    TEXT NOT NULL,
+      head_position TEXT NOT NULL,
+      head_name     TEXT NOT NULL,
+      PRIMARY KEY (memo_id, ord)
+    );
   `;
 
+  // Колонки, добавленные после первой версии: [таблица, колонка, определение]
+  const ADDED_COLUMNS = [
+    ['memos', 'reg_number', 'TEXT'],
+    ['memos', 'attachment', "TEXT NOT NULL DEFAULT ''"],
+    ['memos', 'signer_id', 'INTEGER'],
+    ['memos', 'signer_name', "TEXT NOT NULL DEFAULT ''"],
+    ['memos', 'signer_position', "TEXT NOT NULL DEFAULT ''"],
+    ['memos', 'city', "TEXT NOT NULL DEFAULT ''"],
+    ['memos', 'org_name', 'TEXT'], // NULL у записок прошлых версий: шапка берётся из настроек
+    ['employees', 'position', "TEXT NOT NULL DEFAULT ''"],
+    ['addressees', 'head_name_dative', "TEXT NOT NULL DEFAULT ''"],
+    ['employees', 'is_signer', 'INTEGER NOT NULL DEFAULT 0'], // подписант - не больше одного
+    ['memo_addressees', 'head_name_dative', "TEXT NOT NULL DEFAULT ''"],
+  ];
+
   const DEFAULT_NUMBER_PREFIX = 'НТЦ';
+
+  function columns(db, table) {
+    const cols = [];
+    const stmt = db.prepare(`PRAGMA table_info(${table})`);
+    while (stmt.step()) cols.push(stmt.getAsObject().name);
+    stmt.free();
+    return cols;
+  }
 
   // Создаёт недостающие таблицы и колонки в базе, созданной прошлой версией
   function prepare(db) {
     db.exec(SCHEMA);
-    const cols = [];
-    const stmt = db.prepare('PRAGMA table_info(memos)');
-    while (stmt.step()) cols.push(stmt.getAsObject().name);
-    stmt.free();
-    if (!cols.includes('reg_number')) {
-      db.exec('ALTER TABLE memos ADD COLUMN reg_number TEXT');
+    for (const [table, column, def] of ADDED_COLUMNS) {
+      if (!columns(db, table).includes(column)) {
+        db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${def}`);
+      }
     }
     const prefixRow = db.exec("SELECT value FROM settings WHERE key = 'number_prefix'");
     const prefix = prefixRow.length ? prefixRow[0].values[0][0] : DEFAULT_NUMBER_PREFIX;
@@ -79,6 +110,10 @@
           [root.SZDocx.formatRegNumber(prefix, number, year), id]);
       }
     }
+    // У записок прошлых версий был один адресат в колонках memos
+    db.exec(`INSERT INTO memo_addressees (memo_id, ord, addressee_id, department, head_position, head_name)
+      SELECT id, 0, addressee_id, addressee_department, addressee_position, addressee_name FROM memos
+      WHERE id NOT IN (SELECT memo_id FROM memo_addressees)`);
   }
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -174,6 +209,18 @@
       return this.setting('output_dir', DEFAULT_OUTPUT_DIR);
     }
 
+    get city() {
+      return this.setting('city', '');
+    }
+
+    get signer() {
+      return this.one('SELECT * FROM employees WHERE is_signer = 1 ORDER BY id LIMIT 1');
+    }
+
+    memoAddressees(memoId) {
+      return this.all('SELECT * FROM memo_addressees WHERE memo_id = ? ORDER BY ord', [memoId]);
+    }
+
     get orgName() {
       return this.setting('org_name', '');
     }
@@ -262,7 +309,9 @@
     // ---------- Файлы документов ----------
 
     async saveDocument(memo, overwritePath) {
-      const bytes = root.SZDocx.buildDocx(memo, { orgName: this.orgName });
+      const bytes = root.SZDocx.buildDocx(memo, {
+        orgName: this.orgName, addressees: this.memoAddressees(memo.id),
+      });
       if (overwritePath) {
         const parts = splitPath(overwritePath);
         const dir = await getDir(this.root, parts.slice(0, -1).join('/'), true);

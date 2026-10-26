@@ -194,6 +194,43 @@ h2 { font-size: 16px; line-height: 1.3; margin-bottom: 14px; }
 .field > span i { font-style: normal; font-weight: 400; color: var(--ink-3); }
 .field small { color: var(--ink-3); font-size: 13px; }
 .field-date input { max-width: 200px; }
+
+/* Выбор нескольких адресатов */
+.picker { margin: 0; padding: 0; border: 0; min-width: 0; }
+.picker legend { padding: 0; margin-bottom: 6px; font-size: 13px; font-weight: 500; color: var(--ink-2); }
+.picker-filter { margin-bottom: 6px; }
+.picker-list {
+  max-height: 232px;
+  overflow-y: auto;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+}
+.pick {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--rule-soft);
+  cursor: pointer;
+}
+.pick:last-child { border-bottom: 0; }
+.pick:hover { background: #f6f8f7; }
+.pick:has(input:checked) { background: var(--accent-soft); }
+.pick input { width: auto; margin: 0; accent-color: var(--accent); }
+.pick-text { flex: 1; min-width: 0; font-size: 14px; }
+.pick-text small { display: block; color: var(--ink-3); font-size: 13px; }
+.pick-order {
+  min-width: 22px;
+  height: 22px;
+  border-radius: 11px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 22px;
+  text-align: center;
+  color: #fff;
+  background: var(--accent);
+}
+.pick-order:empty { visibility: hidden; }
 .field-short input { max-width: 240px; }
 
 input, select, textarea {
@@ -283,21 +320,13 @@ textarea { resize: vertical; line-height: 1.5; }
   overflow-wrap: break-word;
 }
 .sheet p { margin: 0; }
-.sheet-org {
-  padding-bottom: 1.01cqw;
-  margin-bottom: 4.03cqw;
-  border-bottom: 0.25cqw solid #000;
-  font-weight: 700;
-  text-align: center;
-}
-.sheet-org-empty { border-bottom-style: dashed; border-color: var(--rule); font-weight: 400; }
-.sheet-org-empty a { font-family: var(--font); font-size: 0.85em; }
-.sheet-to { margin-left: 45.2cqw; margin-bottom: 7.7cqw; }
-.sheet-title { font-weight: 700; text-align: center; }
-.sheet-num { margin-bottom: 2.02cqw; text-align: center; }
-.sheet-topic { margin-bottom: 2.02cqw !important; }
-.sheet-body p { text-indent: 5.95cqw; text-align: justify; hyphens: auto; }
-.sheet-sign { margin-top: 7.7cqw; }
+.s-p { margin: 0; min-height: 1.22em; }
+.s-center { text-align: center; }
+.s-right { text-align: right; }
+.s-both { text-align: justify; hyphens: auto; }
+.s-indent { text-indent: 5.95cqw; }
+.s-split { display: flex; justify-content: space-between; gap: 2em; }
+.s-small { font-size: 0.714em; } /* 10 pt при основном 14 pt */
 .ph { color: #9aa3ae; }
 
 /* ---------- Реестр и таблицы ---------- */
@@ -320,6 +349,22 @@ textarea { resize: vertical; line-height: 1.5; }
 .table.compact th, .table.compact td { padding: 7px 10px; }
 .nowrap { white-space: nowrap; }
 .row-actions { white-space: nowrap; text-align: right; width: 1%; }
+.table .c { text-align: center; width: 1%; white-space: nowrap; }
+.signer-box { width: 18px; height: 18px; margin: 2px 0 0; accent-color: var(--accent); cursor: pointer; }
+.signer-box:disabled { cursor: not-allowed; opacity: .35; }
+
+.signer-line {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  background: var(--desk);
+  font-size: 14px;
+}
+.signer-line small { color: var(--ink-3); font-size: 13px; }
+.signer-line a { margin-left: auto; font-size: 13px; }
 .row-actions .btn + .btn { margin-left: 4px; }
 
 .empty {
@@ -463,3 +508,7 @@ textarea { resize: vertical; line-height: 1.5; }
 }
 
 .btn-login { min-width: 160px; padding: 10px 28px; font-size: 15px; }
+
+/* Многострочные значения (должность подписанта) */
+.pre { white-space: pre-line; }
+.dir-form textarea { min-height: 40px; }
