@@ -12,6 +12,10 @@
   const LOCK_FILE = 'memos.lock';
   const LOCK_STALE_MS = 60000; // блокировка старше минуты считается брошенной
   const LOCK_TIMEOUT_MS = 20000;
+  // Проверка после записи: через сколько перечитать файл и сколько раз повторить
+  const VERIFY_DELAY_MS = 700;
+  const WRITE_ATTEMPTS = 3;
+  const WRITE_LOG_KEEP = 500;
   const DEFAULT_OUTPUT_DIR = 'Служебные записки';
 
   // Справочные значения копируются в записку на момент создания,
@@ -55,6 +59,11 @@
     CREATE TABLE IF NOT EXISTS settings (
       key   TEXT PRIMARY KEY,
       value TEXT NOT NULL
+    );
+    -- Коды последних сохранений: по ним браузер проверяет, что его запись не затёрли
+    CREATE TABLE IF NOT EXISTS write_log (
+      id TEXT PRIMARY KEY,
+      at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
     );
     -- Адресаты записки (их может быть несколько), в порядке выбора
     CREATE TABLE IF NOT EXISTS memo_addressees (
@@ -117,6 +126,7 @@
   }
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const newToken = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
 
   function isNotFound(e) {
     return e && (e.name === 'NotFoundError' || e.code === 'ENOENT');
@@ -235,7 +245,25 @@
     }
 
     // Выполняет fn(store) в транзакции на свежей копии базы и сохраняет файл.
+    //
+    // Блокировка через файл не атомарна: на сетевой папке два компьютера могут
+    // одновременно посчитать её своей, и тогда второй затрёт файл первого.
+    // Поэтому после записи файл перечитывается и проверяется, что код этой
+    // записи в нём остался. Если запись затёрли, fn выполняется заново на
+    // свежей копии базы (для новой СЗ это значит - со следующим номером).
     async write(fn) {
+      for (let attempt = 1; ; attempt++) {
+        const writeId = newToken();
+        const outcome = await this._writeOnce(fn, writeId);
+        if (outcome.saved && await this._confirm(writeId)) return outcome.result;
+        if (attempt >= WRITE_ATTEMPTS) {
+          throw new Error('Не удалось сохранить: несколько человек одновременно меняли данные. Повторите действие.');
+        }
+        await sleep(200 + Math.random() * 400);
+      }
+    }
+
+    async _writeOnce(fn, writeId) {
       const token = await this._lock();
       try {
         await this.refresh(true);
@@ -247,21 +275,38 @@
         let result;
         try {
           result = fn(this);
+          this.run('INSERT INTO write_log (id) VALUES (?)', [writeId]);
+          this.run('DELETE FROM write_log WHERE rowid <= (SELECT MAX(rowid) FROM write_log) - ?',
+            [WRITE_LOG_KEEP]);
           this.db.exec('COMMIT');
         } catch (e) {
           this.db.exec('ROLLBACK');
           throw e;
         }
+        // Если блокировку за это время перехватили, файл не трогаем и пробуем снова
+        const lock = await this._readLock();
+        if (!lock || lock.token !== token) {
+          this.stamp = null;
+          return { saved: false };
+        }
         await writeFile(this.dataDir, DB_FILE, this.db.export());
         const file = await readFile(this.dataDir, DB_FILE);
         this.stamp = `${file.lastModified}:${file.size}`;
-        return result;
+        return { saved: true, result };
       } catch (e) {
         this.stamp = null; // при следующем чтении перечитать с диска
         throw e;
       } finally {
         await this._unlock(token);
       }
+    }
+
+    // Ждёт, пока возможная конкурирующая запись дойдёт до диска, и проверяет,
+    // что сохранение с кодом writeId есть в файле
+    async _confirm(writeId) {
+      await sleep(VERIFY_DELAY_MS);
+      await this.refresh(true);
+      return !!this.one('SELECT 1 AS ok FROM write_log WHERE id = ?', [writeId]);
     }
 
     async _readLock() {
@@ -275,7 +320,7 @@
     }
 
     async _lock() {
-      const token = Math.random().toString(36).slice(2) + Date.now().toString(36);
+      const token = newToken();
       const deadline = Date.now() + LOCK_TIMEOUT_MS;
       for (;;) {
         const current = await this._readLock();
