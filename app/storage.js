@@ -90,6 +90,7 @@
     ['addressees', 'head_name_dative', "TEXT NOT NULL DEFAULT ''"],
     ['employees', 'is_signer', 'INTEGER NOT NULL DEFAULT 0'], // подписант - не больше одного
     ['memo_addressees', 'head_name_dative', "TEXT NOT NULL DEFAULT ''"],
+    ['memos', 'body_rich', 'TEXT'], // текст с оформлением (JSON), NULL - обычный текст из body
   ];
 
   const DEFAULT_NUMBER_PREFIX = 'НТЦ';
