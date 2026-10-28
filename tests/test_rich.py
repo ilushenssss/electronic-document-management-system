@@ -158,7 +158,7 @@ class EditorTest(unittest.TestCase):
         from sz.ui.editor import FormattedTextEdit
         ed = FormattedTextEdit()
         mime = QMimeData()
-        mime.setHtml('<p style="font-family:Arial; font-size:20pt; color:red; text-align:center">'
+        mime.setHtml('<p style="font-family:Comic Sans MS; font-size:20pt; color:red; text-align:center">'
                      'Из <b>Word</b> <i>с</i> <u>оформлением</u></p><p>второй</p>')
         ed.edit.insertFromMimeData(mime)
         self.assertEqual(ed.paragraphs(), [

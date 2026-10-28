@@ -4,7 +4,7 @@ import json
 import re
 import zipfile
 
-FONT = 'Calibri'
+FONT = 'Arial'
 FONT_SIZE = 14  # pt
 CM = 567  # твипов в сантиметре
 
