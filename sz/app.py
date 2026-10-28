@@ -4,7 +4,8 @@ import os
 import sys
 import traceback
 
-from PyQt5.QtCore import QLibraryInfo, QLocale, QSettings, Qt, QTranslator
+import PyQt5
+from PyQt5.QtCore import QCoreApplication, QLibraryInfo, QLocale, QSettings, Qt, QTranslator
 from PyQt5.QtWidgets import QApplication, QMessageBox
 
 from .ui.common import STYLE
@@ -47,6 +48,17 @@ def ini_folder():
     return ''
 
 
+def qt_path(name, kind):
+    """Папка модулей или переводов Qt внутри PyQt5.
+
+    PyQt5 сообщает Qt путь к ним сам, но портит в нём не латинские буквы: из папки
+    вроде «Общие\\Служебные записки» Qt не находит модуль окна и программа
+    не запускается. Поэтому путь берётся напрямую из расположения PyQt5.
+    """
+    path = os.path.join(os.path.dirname(os.path.abspath(PyQt5.__file__)), 'Qt5', name)
+    return path if os.path.isdir(path) else QLibraryInfo.location(kind)
+
+
 def excepthook(kind, value, tb):
     text = ''.join(traceback.format_exception(kind, value, tb))
     if sys.stderr:
@@ -56,6 +68,7 @@ def excepthook(kind, value, tb):
 
 
 def main():
+    QCoreApplication.setLibraryPaths([qt_path('plugins', QLibraryInfo.PluginsPath)])
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     app = QApplication(sys.argv)
@@ -66,7 +79,7 @@ def main():
     # Русские надписи в стандартных окнах Qt (кнопки «Да»/«Нет», календарь)
     QLocale.setDefault(QLocale(QLocale.Russian, QLocale.Russia))
     translator = QTranslator(app)
-    if translator.load('qtbase_ru', QLibraryInfo.location(QLibraryInfo.TranslationsPath)):
+    if translator.load('qtbase_ru', qt_path('translations', QLibraryInfo.TranslationsPath)):
         app.installTranslator(translator)
 
     app.setStyle('Fusion')
