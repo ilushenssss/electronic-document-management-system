@@ -12,9 +12,13 @@
 2. Если база исправна - сообщает об этом и больше ничего не делает.
 3. Иначе переносит всё, что читается, в новый файл memos-восстановлена.db:
    сначала таблицами целиком, а где не выходит - по одной строке, пропуская испорченные.
+4. Сверяет реестр с папками документов Word (<папка документов>/<год>/<номер СЗ>/). Для
+   каждого документа без записи добавляет запись «нет данных» с тем же номером и ссылкой
+   на документ: номера не будут выданы повторно, а записку можно открыть в Word из реестра.
 """
 import datetime
 import os
+import re
 import shutil
 import sqlite3
 import sys
@@ -22,7 +26,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 
-from sz.store import Store  # noqa: E402
+from sz.store import DEFAULT_OUTPUT_DIR, Store, split_path  # noqa: E402
 
 # Порядок важен только для отчёта: справочники, затем записки
 TABLES = ['settings', 'topics', 'employees', 'addressees', 'memos', 'memo_addressees', 'write_log']
@@ -62,7 +66,8 @@ def copy_table(src, dst, table):
     # Таблица целиком не читается: по одной строке
     saved = failed = 0
     rowid = 0
-    gap = 0
+    gap = 0  # попыток подряд без прочитанной строки (пропуски и ошибки)
+    errors = 0  # ошибки после последней прочитанной строки
     try:
         last = src.execute('SELECT MAX(rowid) FROM %s' % table).fetchone()[0]
     except sqlite3.DatabaseError:
@@ -72,16 +77,67 @@ def copy_table(src, dst, table):
         try:
             row = src.execute('SELECT %s FROM %s WHERE rowid = ?' % (names, table), (rowid,)).fetchone()
         except sqlite3.DatabaseError:
-            failed += 1
-            gap = 0
+            errors += 1
+            gap += 1
             continue
         if row is None:
             gap += 1
             continue
         gap = 0
+        failed += errors
+        errors = 0
         dst.execute(insert, row)
         saved += 1
+    if last:
+        failed += errors
+    if not saved and errors:
+        return 0, None  # не прочиталось ни одной строки
     return saved, failed
+
+
+def word_documents(program_root, output_dir):
+    """Документы Word по папкам <папка документов>/<год>/<номер СЗ>/: {номер СЗ: (год, номер, путь)}."""
+    base_parts = split_path(output_dir)
+    base = os.path.join(program_root, *base_parts)
+    found = {}
+    if not os.path.isdir(base):
+        return found
+    for year in sorted(os.listdir(base)):
+        year_dir = os.path.join(base, year)
+        if not (year.isdigit() and os.path.isdir(year_dir)):
+            continue
+        for name in sorted(os.listdir(year_dir)):
+            m = re.match(r'^.+-(\d+)-\d{2}$', name)
+            folder = os.path.join(year_dir, name)
+            if not m or not os.path.isdir(folder):
+                continue
+            files = sorted(f for f in os.listdir(folder) if f.lower().endswith('.docx'))
+            if not files:
+                continue
+            main_file = name + '.docx' if name + '.docx' in files else files[0]
+            found[name] = (int(year), int(m.group(1)), '/'.join(base_parts + [year, name, main_file]))
+    return found
+
+
+def add_missing(dst, program_root):
+    """Записи «нет данных» для документов Word, которых нет в реестре. Возвращает их номера."""
+    row = dst.execute("SELECT value FROM settings WHERE key = 'output_dir'").fetchone()
+    docs = word_documents(program_root, row[0] if row else DEFAULT_OUTPUT_DIR)
+    known = {r[0] for r in dst.execute('SELECT reg_number FROM memos')}
+    taken = {(r[0], r[1]) for r in dst.execute('SELECT year, number FROM memos')}
+    added = []
+    for reg, (year, number, rel) in sorted(docs.items(), key=lambda d: (d[1][0], d[1][1])):
+        if reg in known or (year, number) in taken:
+            continue
+        mtime = os.path.getmtime(os.path.join(program_root, *split_path(rel)))
+        dst.execute(
+            'INSERT INTO memos (number, year, reg_number, memo_date, topic_name, addressee_department, '
+            'addressee_position, addressee_name, body, executor_name, file_path) '
+            "VALUES (?, ?, ?, ?, 'нет данных (восстановление)', '—', '—', '—', ?, '—', ?)",
+            (number, year, reg, datetime.date.fromtimestamp(mtime).isoformat(),
+             'Запись не прочиталась из повреждённой базы. Текст записки - в документе Word.', rel))
+        added.append(reg)
+    return added
 
 
 def main():
@@ -148,7 +204,14 @@ def main():
             print('  %-16s не читается совсем' % table)
         else:
             print('  %-16s перенесено %d%s' % (table, saved, ', не прочитано %d' % failed if failed else ''))
+    # Документы Word, которых нет в восстановленном реестре
+    program_root = os.path.dirname(os.path.dirname(path))
+    added = add_missing(dst, program_root)
     dst.commit()
+    if added:
+        print('\nДокументов Word без записи в реестре: %d. Для них добавлены записи «нет данных»\n'
+              '(дата - дата файла), чтобы номера не выдавались повторно:' % len(added))
+        print('  ' + ', '.join(added[:40]) + (' и ещё %d' % (len(added) - 40) if len(added) > 40 else ''))
     ok = not check(dst)
     dst.close()
     src.close()
@@ -156,8 +219,8 @@ def main():
     print('Дальше:\n'
           '  1. Переименуйте повреждённую data\\memos.db, например в memos-повреждена.db.\n'
           '  2. Скопируйте memos-восстановлена.db в data\\ под именем memos.db.\n'
-          '  3. Откройте программу и проверьте реестр. Записки, которых не хватает, можно\n'
-          '     сверить с документами Word в папке «Служебные записки».')
+          '  3. Откройте программу и проверьте реестр. У записей «нет данных» откройте документ Word:\n'
+          '     в нём текст записки. Записки, для которых не было и документа Word, не восстановить.')
 
 
 if __name__ == '__main__':
