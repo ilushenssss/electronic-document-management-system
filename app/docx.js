@@ -2,7 +2,7 @@
 (function (root) {
   'use strict';
 
-  const FONT = 'Calibri';
+  const FONT = 'Arial';
   const FONT_SIZE = 28; // в полупунктах: 14 pt
   const CM = 567; // твипов в сантиметре
 

@@ -63,7 +63,7 @@
   --ok-soft: #e6f2eb;
 
   --font: "IBM Plex Sans", "Segoe UI", Arial, sans-serif;
-  --doc-font: Calibri, Carlito, "Segoe UI", sans-serif;
+  --doc-font: Arial, "Liberation Sans", Arimo, Helvetica, sans-serif;
   --radius: 6px;
   --focus: 0 0 0 3px rgba(51, 57, 154, .28);
 }
@@ -316,11 +316,11 @@ textarea { resize: vertical; line-height: 1.5; }
   background: var(--paper);
   box-shadow: 0 1px 2px rgba(29, 36, 48, .08), 0 8px 24px -8px rgba(29, 36, 48, .18);
   color: #000;
-  font: 2.353cqw/1.22 var(--doc-font); /* одинарный интервал Word для Calibri */
+  font: 2.353cqw/1.15 var(--doc-font); /* одинарный интервал Word для Arial */
   overflow-wrap: break-word;
 }
 .sheet p { margin: 0; }
-.s-p { margin: 0; min-height: 1.22em; }
+.s-p { margin: 0; min-height: 1.15em; }
 .s-center { text-align: center; }
 .s-right { text-align: right; }
 .s-both { text-align: justify; hyphens: auto; }
