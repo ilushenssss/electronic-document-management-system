@@ -1,4 +1,5 @@
 # Окружение кладётся как есть, без преобразования концов строк
 environment/python/** -text
 *.bat text eol=crlf
+*.vbs text eol=crlf
 *.ini text eol=crlf
