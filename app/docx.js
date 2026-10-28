@@ -161,8 +161,10 @@
 
     // Адресаты: должность и Фамилия И.О. отдельными строками
     if (addressees.length) {
+      // У адресатов из перенесённого журнала, которых нет в справочнике, ФИО нет
       add(...addressees.flatMap((a) => [
-        { text: a.head_position, align: 'right' }, { text: addresseeName(a), align: 'right' }]));
+        { text: a.head_position, align: 'right' },
+        ...(addresseeName(a) ? [{ text: addresseeName(a), align: 'right' }] : [])]));
     } else if (preview) {
       add({ text: { ph: 'Должность адресата' }, align: 'right' }, { text: { ph: 'Фамилия И.О.' }, align: 'right' });
     }
