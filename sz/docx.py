@@ -199,7 +199,9 @@ def memo_blocks(m, addressees, preview=False):
         blocks = []
         for a in addressees:
             blocks.append({'text': a['head_position'], 'align': 'right'})
-            blocks.append({'text': addressee_name(a), 'align': 'right'})
+            # У адресатов из перенесённого журнала, которых нет в справочнике, ФИО нет
+            if addressee_name(a):
+                blocks.append({'text': addressee_name(a), 'align': 'right'})
         add(*blocks)
     elif preview:
         add({'text': {'ph': 'Должность адресата'}, 'align': 'right'},

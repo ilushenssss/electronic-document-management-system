@@ -1,4 +1,4 @@
-"""Сборка папки environment/python: Python 3.8 для Windows x64 и PyQt5.
+"""Сборка папки environment/python: Python 3.8 для Windows x64, PyQt5 и openpyxl.
 
 Нужен только для обновления окружения на компьютере с интернетом; на рабочих
 компьютерах ничего скачивать не нужно - готовое окружение лежит в репозитории.
@@ -8,8 +8,9 @@
 
 Что делает:
 1. Скачивает официальную сборку Python с python.org из NuGet (пакет «python»)
-   и колёса PyQt5 для Windows x64 с PyPI, проверяет их SHA-256.
-2. Распаковывает Python в environment/python и ставит в него PyQt5.
+   и колёса PyQt5 для Windows x64 и openpyxl (чтение журналов Excel для
+   tools/import_journal.py) с PyPI, проверяет их SHA-256.
+2. Распаковывает Python в environment/python и ставит в него эти библиотеки.
 3. Убирает модули Qt, которые программе не нужны (QML, мультимедиа, сеть, ...).
 4. Если установлен pefile (pip install pefile), проверяет, что всем DLL
    хватает библиотек внутри окружения и системных библиотек Windows.
@@ -38,6 +39,10 @@ WHEELS = {
         '750b78e4dba6bdf1607febedc08738e318ea09e9b10aea9ff0d73073f11f6962',
     'PyQt5_sip-12.15.0-cp38-cp38-win_amd64.whl':
         'f600ae6f03e4bff91153c0dc7ebe52f90bd2b6afda58fd580e6990b3b951adc0',
+    'openpyxl-3.1.5-py2.py3-none-any.whl':
+        '5282c12b107bffeef825f4617dc029afaf41d0ea60823bbb665ef3079dc79de2',
+    'et_xmlfile-2.0.0-py3-none-any.whl':
+        '7a91720bc756843502c3b7504c77b8fe44217c85c537d85037f0f536151b2caa',
 }
 
 # Что оставить от PyQt5 (остальное удаляется)
@@ -94,13 +99,14 @@ def install_python():
         f.write(PTH)
 
 
-def install_pyqt():
+def install_packages():
     with tempfile.TemporaryDirectory() as tmp:
         subprocess.check_call([
             sys.executable, '-m', 'pip', 'download', '--only-binary=:all:', '--no-deps',
             '--platform', 'win_amd64', '--python-version', '3.8', '--implementation', 'cp',
             '--abi', 'cp38', '--abi', 'abi3', '--abi', 'none', '-d', tmp,
-            'PyQt5==5.15.11', 'PyQt5-Qt5==5.15.2', 'PyQt5-sip==12.15.0'])
+            'PyQt5==5.15.11', 'PyQt5-Qt5==5.15.2', 'PyQt5-sip==12.15.0',
+            'openpyxl==3.1.5', 'et-xmlfile==2.0.0'])
         for name, digest in WHEELS.items():
             with open(os.path.join(tmp, name), 'rb') as f:
                 if sha256(f.read()) != digest:
@@ -181,7 +187,7 @@ def check_dlls():
 
 def main():
     install_python()
-    install_pyqt()
+    install_packages()
     trim_pyqt()
     check_dlls()
     print('Готово:', TARGET)
