@@ -47,7 +47,7 @@ class WindowTest(unittest.TestCase):
         new.topic.setCurrentIndex(1)
         new.executor.setCurrentIndex(1)
         new.addr_list.item(0).setCheckState(Qt.Checked)
-        new.body.setPlainText('Прошу согласовать.')
+        new.body.set_text('Прошу согласовать.')
         new.create()
         self.assertEqual(win.flash_label.objectName(), 'flashSuccess', win.flash_label.text())
         self.assertIs(win.stack.currentWidget(), win.pages['memo'])

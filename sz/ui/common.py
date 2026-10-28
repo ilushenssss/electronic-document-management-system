@@ -67,6 +67,13 @@ QTabBar::tab { background: transparent; padding: 8px 16px; border: none;
 QTabBar::tab:selected { border-bottom: 2px solid #2f5bd3; color: #1d2433; font-weight: 600; }
 QScrollArea { border: none; background: transparent; }
 QWidget#scrollBody { background: #f4f5f8; }
+QFrame#formatBar { background: #ffffff; border: 1px solid #c8cedb; border-radius: 6px; }
+QFrame#formatBar QToolButton { padding: 3px; border-radius: 4px; color: #3c4457; }
+QFrame#formatBar QToolButton:hover { background: #eef1f7; }
+QFrame#formatBar QToolButton:checked { background: #dfe7fb; color: #1d2433; }
+QFrame#formatBar QComboBox { padding: 1px 4px; min-width: 44px; }
+QTextEdit#richEdit { background: #ffffff; border: 1px solid #c8cedb; border-radius: 6px; padding: 4px 6px; }
+QTextEdit#richEdit:focus { border-color: #2f5bd3; }
 QFrame#sheetWrap { background: #e4e7ee; border-radius: 8px; }
 QTextBrowser#sheet { background: #ffffff; border: 1px solid #d3d8e2; }
 """
@@ -178,10 +185,20 @@ def sheet_html(blocks):
             align = {'center': 'center', 'right': 'right', 'both': 'justify'}.get(b.get('align'), 'left')
             if b.get('first_line'):
                 style += ' text-indent:%dpx;' % round(1.25 * 37.8 * SHEET_SCALE)
-            runs = b.get('runs') or [[b.get('text'), b.get('bold')]]
-            text = ''.join('<b>%s</b>' % t(r[0]) if len(r) > 1 and r[1] else t(r[0]) for r in runs)
+            runs = b.get('runs') or [{'text': b.get('text'), 'bold': b.get('bold')}]
+            text = ''.join(run_html(r, t) for r in runs)
             parts.append('<p align="%s" style="%s">%s</p>' % (align, style, text))
     return ''.join(parts)
+
+
+def run_html(run, t=esc):
+    text = t(run['text']).replace('\n', '<br>')
+    for flag, tag in (('bold', 'b'), ('italic', 'i'), ('underline', 'u')):
+        if run.get(flag):
+            text = '<%s>%s</%s>' % (tag, text, tag)
+    if run.get('size'):
+        text = '<span style="font-size:%.1fpt">%s</span>' % (run['size'] * SHEET_SCALE, text)
+    return text
 
 
 def sheet_frame(view):

@@ -39,10 +39,13 @@ def next_number(store, year):
 def create_memo(store, data, addressee_ids):
     """Сохраняет новую СЗ в реестре и формирует документ Word.
 
-    data: topic_id, executor_id, memo_date (ГГГГ-ММ-ДД), body, attachment.
+    data: topic_id, executor_id, memo_date (ГГГГ-ММ-ДД), body, attachment и, если текст
+    оформлен, body_rich - список абзацев (см. docx.normalize_rich); тогда body не нужен.
     Возвращает (id записки, текст ошибки создания Word или None).
     """
-    body = (data.get('body') or '').strip()
+    rich = docx.normalize_rich(data.get('body_rich')) if data.get('body_rich') is not None else None
+    body = docx.rich_plain_text(rich) if rich is not None else (data.get('body') or '').strip()
+    body_rich = docx.dump_rich(rich) if rich else None
     if not data.get('topic_id'):
         raise StoreError('Выберите тематику работ.')
     if not addressee_ids:
@@ -82,13 +85,13 @@ def create_memo(store, data, addressee_ids):
             'INSERT INTO memos (number, year, reg_number, memo_date, topic_id, topic_name, '
             'addressee_id, addressee_department, addressee_position, addressee_name, '
             'body, attachment, signer_id, signer_name, signer_position, '
-            'executor_id, executor_name, executor_phone, city, org_name) '
-            'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            'executor_id, executor_name, executor_phone, city, org_name, body_rich) '
+            'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
             (number, year, docx.format_reg_number(s.number_prefix, number, year), data['memo_date'],
              topic['id'], topic['name'], addrs[0]['id'], joined('department'), joined('head_position'),
              joined('head_name'), body, (data.get('attachment') or '').strip(), signer['id'],
              signer['full_name'], signer['position'], executor['id'], executor['full_name'],
-             executor['phone'], s.city, s.org_name))
+             executor['phone'], s.city, s.org_name, body_rich))
         for i, a in enumerate(addrs):
             s.run('INSERT INTO memo_addressees (memo_id, ord, addressee_id, department, head_position, '
                   'head_name, head_name_dative) VALUES (?, ?, ?, ?, ?, ?, ?)',

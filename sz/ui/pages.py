@@ -11,6 +11,7 @@ from .. import actions, docx
 from ..store import DEFAULT_NUMBER_PREFIX, DEFAULT_OUTPUT_DIR
 from .common import (BarList, ColumnChart, SheetView, button, esc, hbox, label, panel,
                      sheet_frame, show_in_folder)
+from .editor import FormattedTextEdit
 
 MONTHS = ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек']
 MONTHS_FULL = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август',
@@ -135,9 +136,8 @@ class NewMemoPage(Page):
         lay.addWidget(self.date)
 
         lay.addWidget(field_label('Текст'))
-        self.body = QPlainTextEdit()
-        self.body.setPlaceholderText('Каждый абзац с новой строки')
-        self.body.setMinimumHeight(170)
+        self.body = FormattedTextEdit('Каждый абзац с новой строки')
+        self.body.setMinimumHeight(220)
         lay.addWidget(self.body)
 
         lay.addWidget(field_label('Приложение', optional=True))
@@ -174,7 +174,7 @@ class NewMemoPage(Page):
         outer.addWidget(splitter)
 
         for signal in (self.topic.currentIndexChanged, self.executor.currentIndexChanged,
-                       self.date.dateChanged, self.body.textChanged, self.attachment.textChanged):
+                       self.date.dateChanged, self.body.changed, self.attachment.textChanged):
             signal.connect(self.update_preview)
 
     def reload(self):
@@ -265,7 +265,7 @@ class NewMemoPage(Page):
             'topic_id': self.topic.currentData(),
             'executor_id': self.executor.currentData(),
             'memo_date': self.date.date().toString('yyyy-MM-dd'),
-            'body': self.body.toPlainText(),
+            'body_rich': self.body.paragraphs(),
             'attachment': self.attachment.toPlainText(),
         }
 
@@ -283,7 +283,7 @@ class NewMemoPage(Page):
         signer = self.signer or {}
         self.sheet.show_memo({
             'reg_number': reg, 'memo_date': d['memo_date'], 'topic_name': topic.get('name'),
-            'body': d['body'], 'attachment': d['attachment'], 'org_name': self.org_name,
+            'body': docx.rich_plain_text(d['body_rich']), 'body_rich': docx.dump_rich(d['body_rich']), 'attachment': d['attachment'], 'org_name': self.org_name,
             'city': self.city, 'signer_name': signer.get('full_name'),
             'signer_position': signer.get('position'), 'executor_name': executor.get('full_name'),
             'executor_phone': executor.get('phone'),
@@ -297,7 +297,7 @@ class NewMemoPage(Page):
         memo_id, doc_error = result
         reg = self.store.one('SELECT reg_number FROM memos WHERE id = ?', (memo_id,))['reg_number']
         self.chosen = []
-        self.body.clear()
+        self.body.reset()
         self.attachment.clear()
         self.date.setDate(QDate.currentDate())
         self.win.navigate('memo', memo_id)

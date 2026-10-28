@@ -1,5 +1,6 @@
 """Формирование Word-документа (.docx) служебной записки без внешних библиотек."""
 import io
+import json
 import re
 import zipfile
 
@@ -74,11 +75,94 @@ def greeting(addressees):
     return '%s %s %s!' % (word, parts[1], parts[2])
 
 
+# ---------- Текст записки с оформлением ----------
+#
+# Хранится в memos.body_rich как JSON-список абзацев:
+#   [{"align": "both", "indent": true,
+#     "runs": [{"text": "...", "bold": true, "italic": true, "underline": true, "size": 12}]}]
+# align: left | center | right | both (по ширине); indent - отступ первой строки;
+# "\n" внутри text - перенос строки без нового абзаца. Ложные признаки не пишутся.
+# Обычный текст записки (memos.body) хранится всегда - по нему идёт поиск.
+
+RICH_SIZES = (10, 11, 12, 13, 14, 16)
+ALIGNS = ('left', 'center', 'right', 'both')
+RUN_FLAGS = ('bold', 'italic', 'underline')
+
+
+def _clean_run(r):
+    if not isinstance(r, dict) or not isinstance(r.get('text'), str):
+        return None
+    text = r['text'].replace('\r\n', '\n').replace('\r', '\n')
+    if not text:
+        return None
+    run = {'text': text}
+    for flag in RUN_FLAGS:
+        if r.get(flag):
+            run[flag] = True
+    if r.get('size') in RICH_SIZES and r['size'] != FONT_SIZE:
+        run['size'] = r['size']
+    return run
+
+
+def normalize_rich(paragraphs):
+    """Оставляет только допустимое оформление, убирает пустые абзацы и пробелы по краям абзаца,
+    склеивает соседние фрагменты с одинаковым оформлением."""
+    out = []
+    for p in paragraphs if isinstance(paragraphs, list) else []:
+        if not isinstance(p, dict):
+            continue
+        runs = []
+        for r in filter(None, map(_clean_run, p.get('runs') or [])):
+            if runs and {k: v for k, v in runs[-1].items() if k != 'text'} == \
+                    {k: v for k, v in r.items() if k != 'text'}:
+                runs[-1]['text'] += r['text']
+            else:
+                runs.append(r)
+        if runs:
+            runs[0]['text'] = runs[0]['text'].lstrip()
+            runs[-1]['text'] = runs[-1]['text'].rstrip()
+            runs = [r for r in runs if r['text']]
+        if runs:
+            out.append({'align': p.get('align') if p.get('align') in ALIGNS else 'both',
+                        'indent': bool(p.get('indent')), 'runs': runs})
+    return out
+
+
+def parse_rich(value):
+    """Абзацы с оформлением из memos.body_rich или None, если оформления нет."""
+    if not value:
+        return None
+    try:
+        return normalize_rich(json.loads(value)) or None
+    except ValueError:
+        return None
+
+
+def rich_plain_text(paragraphs):
+    return '\n'.join(''.join(r['text'] for r in p['runs']) for p in paragraphs)
+
+
+def rich_is_plain(paragraphs):
+    """True, если оформление не отличается от обычного текста (по ширине, с отступом)."""
+    return all(p['align'] == 'both' and p['indent'] and
+               all(set(r) == {'text'} and '\n' not in r['text'] for r in p['runs'])
+               for p in paragraphs)
+
+
+def dump_rich(paragraphs):
+    """JSON для memos.body_rich; None, если записке оформление не нужно."""
+    paragraphs = normalize_rich(paragraphs)
+    if not paragraphs or rich_is_plain(paragraphs):
+        return None
+    return json.dumps(paragraphs, ensure_ascii=False, separators=(',', ':'))
+
+
 def memo_blocks(m, addressees, preview=False):
     """Содержимое записки как список блоков. По нему строятся и документ Word,
     и лист на экране, поэтому они не расходятся.
 
-      {text | runs, bold, align, first_line, size} - абзац
+      {text | runs, bold, align, first_line, size} - абзац;
+          runs - список {text, bold, italic, underline, size}
       {split: [слева, справа], size}               - строка с двумя краями
       {blank: True}                                - пустая строка
 
@@ -125,15 +209,20 @@ def memo_blocks(m, addressees, preview=False):
 
     add({'text': greeting(addressees) or v('', 'Уважаемый Имя Отчество!'), 'align': 'center'})
 
+    rich = parse_rich(m.get('body_rich'))
     body = split_lines(m.get('body'))
-    if body:
+    if rich:
+        # По левому краю - без явного выравнивания, как у остальных абзацев
+        add(*[{'runs': p['runs'], 'align': None if p['align'] == 'left' else p['align'],
+               'first_line': p['indent']} for p in rich])
+    elif body:
         add(*[{'text': line, 'align': 'both', 'first_line': True} for line in body])
     elif preview:
         add({'text': {'ph': 'Текст служебной записки'}, 'align': 'both', 'first_line': True})
 
     attachment = split_lines(m.get('attachment'))
     if attachment:
-        add(*[{'runs': [['' if i else 'Приложение: '], [line]], 'align': 'both'}
+        add(*[{'runs': [{'text': '' if i else 'Приложение: '}, {'text': line}], 'align': 'both'}
               for i, line in enumerate(attachment)])
 
     # Должность подписанта может быть в несколько строк; Фамилия И.О. - справа на последней
@@ -167,11 +256,20 @@ def xml(text):
     return _CONTROL.sub('', text)  # управляющие символы недопустимы в XML
 
 
-def run_xml(text, bold, size=FONT_SIZE):
-    """Размер задаётся у каждого фрагмента явно, чтобы не зависеть от настроек Word."""
-    rpr = ('<w:b/><w:bCs/>' if bold else '') + \
-        '<w:sz w:val="%d"/><w:szCs w:val="%d"/>' % (size * 2, size * 2)
-    content = '<w:tab/>' if text == '\t' else '<w:t xml:space="preserve">%s</w:t>' % xml(text)
+def run_xml(run, size=FONT_SIZE):
+    """Размер задаётся у каждого фрагмента явно, чтобы не зависеть от настроек Word.
+    Порядок элементов w:rPr задан схемой Word: b, i, sz, u."""
+    size = run.get('size') or size
+    rpr = (('<w:b/><w:bCs/>' if run.get('bold') else '') +
+           ('<w:i/><w:iCs/>' if run.get('italic') else '') +
+           '<w:sz w:val="%d"/><w:szCs w:val="%d"/>' % (size * 2, size * 2) +
+           ('<w:u w:val="single"/>' if run.get('underline') else ''))
+    text = run['text']
+    if text == '\t':
+        content = '<w:tab/>'
+    else:
+        content = '<w:br/>'.join('<w:t xml:space="preserve">%s</w:t>' % xml(part)
+                                 for part in text.split('\n'))
     return '<w:r><w:rPr>%s</w:rPr>%s</w:r>' % (rpr, content)
 
 
@@ -182,16 +280,16 @@ def block_xml(blk):
     elif blk.get('split'):
         # Правый край - через табуляцию по правому краю текста
         ppr.append('<w:tabs><w:tab w:val="right" w:pos="%d"/></w:tabs>' % TEXT_WIDTH)
-        runs = [[blk['split'][0]], ['\t'], [blk['split'][1]]]
+        runs = [{'text': blk['split'][0]}, {'text': '\t'}, {'text': blk['split'][1]}]
     else:
-        runs = blk.get('runs') or [[blk.get('text'), blk.get('bold')]]
+        runs = blk.get('runs') or [{'text': blk.get('text'), 'bold': blk.get('bold')}]
     if blk.get('first_line'):
         ppr.append('<w:ind w:firstLine="%d"/>' % twips(1.25))
     if blk.get('align'):
         ppr.append('<w:jc w:val="%s"/>' % blk['align'])
     size = blk.get('size') or FONT_SIZE
     rpr_default = '<w:rPr><w:sz w:val="%d"/><w:szCs w:val="%d"/></w:rPr>' % (size * 2, size * 2)
-    body = ''.join(run_xml(r[0], r[1] if len(r) > 1 else False, size) for r in runs if r[0])
+    body = ''.join(run_xml(r, size) for r in runs if r['text'])
     return '<w:p><w:pPr>%s%s</w:pPr>%s</w:p>' % (''.join(ppr), rpr_default, body)
 
 
