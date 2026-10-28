@@ -3,7 +3,7 @@
   'use strict';
 
   const { Store, DEFAULT_OUTPUT_DIR, DEFAULT_NUMBER_PREFIX } = window.SZStore;
-  const { addresseeName, formatDate, formatRegNumber, memoBlocks, shortName, splitLines } = window.SZDocx;
+  const { addresseeName, dumpRich, formatDate, formatRegNumber, memoBlocks, richPlainText, shortName, splitLines } = window.SZDocx;
 
   // Описание справочников: заголовок, поля (имя, подпись, обязательное), сортировка
   const DIRECTORIES = {
@@ -138,10 +138,20 @@
         cls.push('s-split');
         return `<p class="${cls.join(' ')}"><span>${t(b.split[0])}</span><span>${t(b.split[1])}</span></p>`;
       }
-      const runs = b.runs || [[b.text, b.bold]];
-      return `<p class="${cls.join(' ')}">${runs.map(([x, bold]) => (bold ? `<b>${t(x)}</b>` : t(x))).join('')}</p>`;
+      const runs = b.runs || [{ text: b.text, bold: b.bold }];
+      return `<p class="${cls.join(' ')}">${runs.map((r) => runHtml(r, t)).join('')}</p>`;
     }).join('');
     return `<article class="sheet" aria-label="Лист служебной записки">${html}</article>`;
+  }
+
+  // Фрагмент текста с оформлением; размер - относительно основного шрифта абзаца (14 pt)
+  function runHtml(r, t) {
+    let h = typeof r.text === 'string' ? t(r.text).replace(/\n/g, '<br>') : t(r.text);
+    if (r.bold) h = `<b>${h}</b>`;
+    if (r.italic) h = `<i>${h}</i>`;
+    if (r.underline) h = `<u>${h}</u>`;
+    if (r.size) h = `<span style="font-size:${(r.size / 14).toFixed(4)}em">${h}</span>`;
+    return h;
   }
 
   // Записки прошлых версий не хранят шапку - показываем текущую из настроек
@@ -384,8 +394,8 @@
           </fieldset>
           <label class="field field-date"><span>Дата</span>
             <input type="date" name="memo_date" value="${today()}" required></label>
-          <label class="field"><span>Текст</span>
-            <textarea name="body" rows="9" required placeholder="Каждый абзац с новой строки"></textarea></label>
+          <div class="field"><span id="body-label">Текст</span>
+            <div id="body-editor"></div></div>
           <label class="field"><span>Приложение <i>необязательно</i></span>
             <textarea name="attachment" rows="2" placeholder="Например: смета на 2 л. в 1 экз."></textarea></label>
           <div class="field"><span>Подписант</span>
@@ -407,6 +417,19 @@
     const form = document.getElementById('memo-form');
     const byId = (rows, id) => rows.find((r) => String(r.id) === String(id)) || {};
     let chosen = []; // id адресатов в порядке выбора
+    const editor = window.SZEditor.create(document.getElementById('body-editor'), {
+      placeholder: 'Каждый абзац с новой строки', onChange: () => updatePreview(),
+    });
+    editor.element.setAttribute('aria-labelledby', 'body-label');
+
+    // Данные формы и текст из поля с оформлением
+    function formData() {
+      const d = Object.fromEntries(new FormData(form));
+      const paragraphs = editor.paragraphs();
+      d.body = richPlainText(paragraphs);
+      d.body_rich = dumpRich(paragraphs);
+      return d;
+    }
 
     function updatePicker() {
       for (const box of form.querySelectorAll('.pick input')) {
@@ -416,13 +439,13 @@
     }
 
     function updatePreview() {
-      const d = Object.fromEntries(new FormData(form));
+      const d = formData();
       const year = /^\d{4}/.test(d.memo_date) ? Number(d.memo_date.slice(0, 4)) : new Date().getFullYear();
       const reg = formatRegNumber(store.numberPrefix, nextNumber(year), year);
       const executor = byId(employees, d.executor_id);
       document.getElementById('preview').innerHTML = sheetHtml({
         reg_number: reg, memo_date: d.memo_date, topic_name: byId(topics, d.topic_id).name,
-        body: d.body, attachment: d.attachment, org_name: store.orgName, city: store.city,
+        body: d.body, body_rich: d.body_rich, attachment: d.attachment, org_name: store.orgName, city: store.city,
         signer_name: signer && signer.full_name, signer_position: signer && signer.position,
         executor_name: executor.full_name, executor_phone: executor.phone,
       }, chosen.map((id) => byId(addressees, id)), { preview: true });
@@ -449,7 +472,7 @@
 
     form.onsubmit = (ev) => {
       ev.preventDefault();
-      const data = Object.fromEntries(new FormData(form));
+      const data = formData();
       busy(form.querySelector('button[type=submit]'), () => createMemo(data, chosen));
     };
   }
@@ -487,12 +510,13 @@
         `INSERT INTO memos (number, year, reg_number, memo_date, topic_id, topic_name,
            addressee_id, addressee_department, addressee_position, addressee_name,
            body, attachment, signer_id, signer_name, signer_position,
-           executor_id, executor_name, executor_phone, city, org_name)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           executor_id, executor_name, executor_phone, city, org_name, body_rich)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [number, year, formatRegNumber(s.numberPrefix, number, year), data.memo_date,
           topic.id, topic.name, addrs[0].id, joined('department'), joined('head_position'),
           joined('head_name'), body, data.attachment.trim(), signer.id, signer.full_name,
-          signer.position, executor.id, executor.full_name, executor.phone, s.city, s.orgName]);
+          signer.position, executor.id, executor.full_name, executor.phone, s.city, s.orgName,
+          data.body_rich || null]);
       addrs.forEach((a, i) => s.run(
         `INSERT INTO memo_addressees (memo_id, ord, addressee_id, department, head_position, head_name,
            head_name_dative) VALUES (?, ?, ?, ?, ?, ?, ?)`,

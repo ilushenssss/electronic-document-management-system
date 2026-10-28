@@ -57,9 +57,88 @@
     return `${word} ${parts[1]} ${parts[2]}!`;
   }
 
+  // ---------- Текст записки с оформлением ----------
+  //
+  // Хранится в memos.body_rich как JSON-список абзацев:
+  //   [{"align": "both", "indent": true,
+  //     "runs": [{"text": "...", "bold": true, "italic": true, "underline": true, "size": 12}]}]
+  // align: left | center | right | both (по ширине); indent - отступ первой строки;
+  // "\n" внутри text - перенос строки без нового абзаца. Ложные признаки не пишутся.
+  // Обычный текст записки (memos.body) хранится всегда - по нему идёт поиск.
+  // Тот же формат у настольной версии (sz/docx.py).
+
+  const RICH_SIZES = [10, 11, 12, 13, 14, 16];
+  const ALIGNS = ['left', 'center', 'right', 'both'];
+  const RUN_FLAGS = ['bold', 'italic', 'underline'];
+
+  function cleanRun(r) {
+    if (!r || typeof r !== 'object' || typeof r.text !== 'string') return null;
+    const text = r.text.replace(/\r\n?/g, '\n');
+    if (!text) return null;
+    const run = { text };
+    for (const flag of RUN_FLAGS) if (r[flag]) run[flag] = true;
+    if (RICH_SIZES.includes(r.size) && r.size !== FONT_SIZE / 2) run.size = r.size;
+    return run;
+  }
+
+  function sameFormat(a, b) {
+    return RUN_FLAGS.every((f) => !!a[f] === !!b[f]) && (a.size || 0) === (b.size || 0);
+  }
+
+  // Оставляет только допустимое оформление, убирает пустые абзацы и пробелы по краям абзаца,
+  // склеивает соседние фрагменты с одинаковым оформлением
+  function normalizeRich(paragraphs) {
+    const out = [];
+    for (const p of Array.isArray(paragraphs) ? paragraphs : []) {
+      if (!p || typeof p !== 'object') continue;
+      let runs = [];
+      for (const r of (Array.isArray(p.runs) ? p.runs : []).map(cleanRun).filter(Boolean)) {
+        const last = runs[runs.length - 1];
+        if (last && sameFormat(last, r)) last.text += r.text;
+        else runs.push(r);
+      }
+      if (runs.length) {
+        runs[0].text = runs[0].text.replace(/^\s+/, '');
+        runs[runs.length - 1].text = runs[runs.length - 1].text.replace(/\s+$/, '');
+        runs = runs.filter((r) => r.text);
+      }
+      if (runs.length) out.push({ align: ALIGNS.includes(p.align) ? p.align : 'both', indent: !!p.indent, runs });
+    }
+    return out;
+  }
+
+  // Абзацы с оформлением из memos.body_rich или null, если оформления нет
+  function parseRich(value) {
+    if (!value) return null;
+    try {
+      const paragraphs = normalizeRich(JSON.parse(value));
+      return paragraphs.length ? paragraphs : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function richPlainText(paragraphs) {
+    return paragraphs.map((p) => p.runs.map((r) => r.text).join('')).join('\n');
+  }
+
+  // Оформление не отличается от обычного текста (по ширине, с отступом)
+  function richIsPlain(paragraphs) {
+    return paragraphs.every((p) => p.align === 'both' && p.indent &&
+      p.runs.every((r) => Object.keys(r).length === 1 && !r.text.includes('\n')));
+  }
+
+  // JSON для memos.body_rich; null, если записке оформление не нужно
+  function dumpRich(paragraphs) {
+    const clean = normalizeRich(paragraphs);
+    if (!clean.length || richIsPlain(clean)) return null;
+    return JSON.stringify(clean);
+  }
+
   // Содержимое записки как список блоков. По нему строятся и документ Word,
   // и лист на экране, поэтому они не расходятся.
-  //   { text | runs, bold, align, firstLine, size } - абзац
+  //   { text | runs, bold, align, firstLine, size } - абзац;
+  //       runs - список { text, bold, italic, underline, size }
   //   { split: [слева, справа], size }                 - строка с двумя краями
   //   { blank: true }                                  - пустая строка
   // В режиме preview незаполненные значения заменяются объектами { ph: 'подсказка' }.
@@ -92,13 +171,17 @@
 
     add({ text: greeting(addressees) || v('', 'Уважаемый Имя Отчество!'), align: 'center' });
 
+    const rich = parseRich(m.body_rich);
     const body = splitLines(m.body);
-    if (body.length) add(...body.map((line) => ({ text: line, align: 'both', firstLine: true })));
+    if (rich) {
+      // По левому краю - без явного выравнивания, как у остальных абзацев
+      add(...rich.map((p) => ({ runs: p.runs, align: p.align === 'left' ? undefined : p.align, firstLine: p.indent })));
+    } else if (body.length) add(...body.map((line) => ({ text: line, align: 'both', firstLine: true })));
     else if (preview) add({ text: { ph: 'Текст служебной записки' }, align: 'both', firstLine: true });
 
     const attachment = splitLines(m.attachment);
     if (attachment.length) {
-      add(...attachment.map((line, i) => ({ runs: [[i ? '' : 'Приложение: '], [line]], align: 'both' })));
+      add(...attachment.map((line, i) => ({ runs: [{ text: i ? '' : 'Приложение: ' }, { text: line }], align: 'both' })));
     }
 
     // Должность подписанта может быть в несколько строк; Фамилия И.О. - справа на последней
@@ -125,12 +208,16 @@
       .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '');
   }
 
-  // Размер задаётся у каждого фрагмента явно, чтобы не зависеть от настроек Word
-  function run(text, bold, size = FONT_SIZE / 2) {
-    const rPr = (bold ? '<w:b/><w:bCs/>' : '') +
-      `<w:sz w:val="${size * 2}"/><w:szCs w:val="${size * 2}"/>`;
-    const content = text === '\t' ? '<w:tab/>' : `<w:t xml:space="preserve">${xml(text)}</w:t>`;
-    return `<w:r>${rPr ? `<w:rPr>${rPr}</w:rPr>` : ''}${content}</w:r>`;
+  // Размер задаётся у каждого фрагмента явно, чтобы не зависеть от настроек Word.
+  // Порядок элементов w:rPr задан схемой Word: b, i, sz, u.
+  function run(r, blockSize = FONT_SIZE / 2) {
+    const size = r.size || blockSize;
+    const rPr = (r.bold ? '<w:b/><w:bCs/>' : '') + (r.italic ? '<w:i/><w:iCs/>' : '') +
+      `<w:sz w:val="${size * 2}"/><w:szCs w:val="${size * 2}"/>` +
+      (r.underline ? '<w:u w:val="single"/>' : '');
+    const content = r.text === '\t' ? '<w:tab/>'
+      : r.text.split('\n').map((part) => `<w:t xml:space="preserve">${xml(part)}</w:t>`).join('<w:br/>');
+    return `<w:r><w:rPr>${rPr}</w:rPr>${content}</w:r>`;
   }
 
   function blockXml(blk) {
@@ -141,16 +228,16 @@
     } else if (blk.split) {
       // Правый край - через табуляцию по правому краю текста
       pPr.push(`<w:tabs><w:tab w:val="right" w:pos="${TEXT_WIDTH}"/></w:tabs>`);
-      runs = [[blk.split[0]], ['\t'], [blk.split[1]]];
+      runs = [{ text: blk.split[0] }, { text: '\t' }, { text: blk.split[1] }];
     } else {
-      runs = blk.runs || [[blk.text, blk.bold]];
+      runs = blk.runs || [{ text: blk.text, bold: blk.bold }];
     }
     if (blk.firstLine) pPr.push(`<w:ind w:firstLine="${Math.round(1.25 * CM)}"/>`);
     if (blk.align) pPr.push(`<w:jc w:val="${blk.align}"/>`);
     const size = blk.size || FONT_SIZE / 2;
     const rPrDefault = `<w:rPr><w:sz w:val="${size * 2}"/><w:szCs w:val="${size * 2}"/></w:rPr>`;
     return `<w:p>${pPr.length || rPrDefault ? `<w:pPr>${pPr.join('')}${rPrDefault}</w:pPr>` : ''}` +
-      runs.filter(([t]) => t).map(([t, b]) => run(t, b, size)).join('') + '</w:p>';
+      runs.filter((r) => r.text).map((r) => run(r, size)).join('') + '</w:p>';
   }
 
   function documentXml(memo, addressees) {
@@ -303,7 +390,7 @@
   }
 
   root.SZDocx = {
-    addresseeName, buildDocx, fileBaseName, formatDate, formatLongDate, formatRegNumber, memoBlocks,
-    shortName, splitLines,
+    addresseeName, buildDocx, dumpRich, fileBaseName, formatDate, formatLongDate, formatRegNumber, memoBlocks,
+    normalizeRich, parseRich, richPlainText, RICH_SIZES, shortName, splitLines,
   };
 })(typeof window !== 'undefined' ? window : globalThis);
