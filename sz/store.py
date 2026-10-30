@@ -10,9 +10,11 @@ import getpass
 import json
 import os
 import random
+import shutil
 import socket
 import sqlite3
 import time
+import tempfile
 import uuid
 
 from . import docx
@@ -286,7 +288,7 @@ class Store:
     def run(self, sql, params=()):
         return self.db.execute(sql, params).lastrowid
 
-    def write(self, fn):
+    def write(self, fn, after_commit=None):
         """Выполняет fn(store) в транзакции под блокировкой и возвращает её результат."""
         with self._lock():
             self.db.execute('BEGIN IMMEDIATE')
@@ -296,6 +298,9 @@ class Store:
             except BaseException:
                 self.db.execute('ROLLBACK')
                 raise
+            if after_commit:
+                # Документ обновляется после COMMIT, но до допуска другого писателя.
+                after_commit(result)
         self._version = self._data_version()
         return result
 
@@ -361,12 +366,31 @@ class Store:
                 n += 1
             rel_parts = rel_dir + [name]
         path = os.path.join(self.root, *rel_parts)
+        temp_path = None
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, 'wb') as f:
+            owner_files = [os.path.join(os.path.dirname(path), '~$' + name)
+                           for name in (os.path.basename(path), os.path.basename(path)[2:])]
+            if any(os.path.exists(owner_file) for owner_file in owner_files):
+                raise PermissionError('Обнаружен файл блокировки Word')
+            with tempfile.NamedTemporaryFile(dir=os.path.dirname(path), suffix='.tmp', delete=False) as f:
+                temp_path = f.name
                 f.write(data)
+                f.flush()
+                os.fsync(f.fileno())
+            if os.path.isfile(path):
+                backup_dir = os.path.join(os.path.dirname(path), 'Предыдущие версии')
+                os.makedirs(backup_dir, exist_ok=True)
+                backup = '%s-%s-%s.docx' % (os.path.splitext(os.path.basename(path))[0],
+                                           time.strftime('%Y%m%d-%H%M%S'), uuid.uuid4().hex[:8])
+                shutil.copy2(path, os.path.join(backup_dir, backup))
+            os.replace(temp_path, path)
+            temp_path = None
         except PermissionError:
             raise StoreError('Не удалось записать %s: файл открыт в Word или нет прав на запись. '
                              'Закройте документ и повторите.' % path)
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                os.unlink(temp_path)
         return '/'.join(rel_parts)
 

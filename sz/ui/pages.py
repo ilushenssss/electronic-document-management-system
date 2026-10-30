@@ -1,11 +1,13 @@
 """Страницы: новая СЗ, реестр, просмотр СЗ, статистика, справочники."""
 import datetime
+import json
 
 from PyQt5.QtCore import QDate, Qt, QTimer
 from PyQt5.QtWidgets import (QAbstractItemView, QComboBox, QDateEdit, QFormLayout,
                              QGridLayout, QHBoxLayout, QHeaderView, QLineEdit, QListWidget,
                              QListWidgetItem, QPlainTextEdit, QScrollArea, QSplitter,
-                             QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget)
+                             QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
+                             QDialog, QTextBrowser)
 
 from .. import actions, docx
 from ..store import DEFAULT_NUMBER_PREFIX, DEFAULT_OUTPUT_DIR
@@ -99,6 +101,7 @@ def scrolled(widget):
 class NewMemoPage(Page):
     def __init__(self, win):
         super().__init__(win)
+        self.edit_snapshot = None
         self.topics = []
         self.addressees = []
         self.employees = []
@@ -107,7 +110,9 @@ class NewMemoPage(Page):
         self.next_numbers = {}  # год -> следующий номер, чтобы не читать базу на каждое нажатие
 
         form = QWidget()
-        lay = page_layout(form, 'Новая служебная записка')
+        lay = page_layout(form)
+        self.form_title = label('Новая служебная записка', 'title')
+        lay.addWidget(self.form_title)
         self.warn = label('', 'warn', wrap=True)
         self.warn.linkActivated.connect(self.win.open_link)
         lay.addWidget(self.warn)
@@ -148,8 +153,8 @@ class NewMemoPage(Page):
 
         lay.addWidget(field_label('Подписант'))
         self.signer_label = label('', wrap=True)
-        lay.addWidget(hbox(self.signer_label,
-                           button('Изменить', 'link', lambda: self.win.navigate('dirs', 'employees'))))
+        self.signer_change = button('Изменить', 'link', lambda: self.win.navigate('dirs', 'employees'))
+        lay.addWidget(hbox(self.signer_label, self.signer_change))
 
         lay.addWidget(field_label('Исполнитель'))
         self.executor_filter = QLineEdit()
@@ -165,9 +170,16 @@ class NewMemoPage(Page):
 
         self.submit = button('Создать и сформировать Word', 'primary', self.create)
         self.clear_btn = button('Очистить', on_click=self.clear_form)
+        self.cancel_edit_btn = button('Отмена', on_click=self.cancel_edit)
+        self.cancel_edit_btn.hide()
+        self.reload_saved_btn = button('Перечитать СЗ', on_click=self.reload_saved)
+        self.reload_saved_btn.hide()
+        self.previous_draft_btn = button('Показать мой предыдущий текст', on_click=self.show_previous_draft)
+        self.previous_draft_btn.hide()
         self.number_note = label('', 'hint', wrap=True)
         lay.addSpacing(6)
-        lay.addWidget(hbox(self.submit, self.clear_btn))
+        lay.addWidget(hbox(self.submit, self.clear_btn, self.cancel_edit_btn))
+        lay.addWidget(hbox(self.reload_saved_btn, self.previous_draft_btn))
         lay.addWidget(self.number_note)
         lay.addStretch(1)
 
@@ -195,9 +207,21 @@ class NewMemoPage(Page):
         self.signer = s.signer
         self.next_numbers = {}
         self.prefix, self.org_name, self.city = s.number_prefix, s.org_name, s.city
-        fill_combo(self.topic, self.topics, lambda t: t['name'], 'Выберите тематику')
+        if self.edit_snapshot:
+            m = self.edit_snapshot['memo']
+            self.topics.insert(0, {'id': -1, 'name': m['topic_name'], '_saved': True})
+            self.employees.insert(0, {'id': -1, 'full_name': m['executor_name'],
+                                      'phone': m['executor_phone'], '_saved': True})
+            self.addressees = [dict(a, id=-i-1, _saved=True)
+                               for i, a in enumerate(self.edit_snapshot['addressees'])] + self.addressees
+            self.signer = {'id': m['signer_id'], 'full_name': m['signer_name'], 'position': m['signer_position']}
+            self.org_name = m['org_name'] if m['org_name'] is not None else s.org_name
+            self.city = m['city']
+        fill_combo(self.topic, self.topics, lambda t: t['name'] + (' (из СЗ)' if t.get('_saved') else ''),
+                   'Выберите тематику')
         fill_combo(self.executor, self.employees,
-                   lambda e: e['full_name'] + (', ' + e['phone'] if e['phone'] else ''),
+                   lambda e: e['full_name'] + (', ' + e['phone'] if e['phone'] else '')
+                   + (' (из СЗ)' if e.get('_saved') else ''),
                    'Выберите сотрудника')
         self.filter_executors()
         ids = {a['id'] for a in self.addressees}
@@ -245,7 +269,8 @@ class NewMemoPage(Page):
 
     def addressee_text(self, a):
         pos = self.chosen.index(a['id']) + 1 if a['id'] in self.chosen else 0
-        return '%s%s\n%s %s' % ('%d. ' % pos if pos else '', a['department'], a['head_position'],
+        return '%s%s\n%s %s' % ('%d. ' % pos if pos else '',
+                                a['department'] + (' (из СЗ)' if a.get('_saved') else ''), a['head_position'],
                                 docx.addressee_name(a))
 
     def update_picker(self):
@@ -314,7 +339,8 @@ class NewMemoPage(Page):
         year = int(d['memo_date'][:4])
         if year not in self.next_numbers:
             self.next_numbers[year] = actions.next_number(self.store, year)
-        reg = docx.format_reg_number(self.prefix, self.next_numbers[year], year)
+        reg = (self.edit_snapshot['memo']['reg_number'] if self.edit_snapshot else
+               docx.format_reg_number(self.prefix, self.next_numbers[year], year))
         topic = next((t for t in self.topics if t['id'] == d['topic_id']), {})
         executor = next((e for e in self.employees if e['id'] == d['executor_id']), {})
         by_id = {a['id']: a for a in self.addressees}
@@ -326,7 +352,18 @@ class NewMemoPage(Page):
             'signer_position': signer.get('position'), 'executor_name': executor.get('full_name'),
             'executor_phone': executor.get('phone'),
         }, [by_id[i] for i in self.chosen], preview=True)
-        self.number_note.setText('Номер %s закрепится при сохранении.' % reg)
+        self.number_note.setText('Редактируется %s. Номер сохраняется; дата — в пределах года номера. '
+                                 'Подписант и значения «из СЗ» взяты из сохранённой записки.' % reg
+                                 if self.edit_snapshot else 'Номер %s закрепится при сохранении.' % reg)
+
+    def cancel_edit(self):
+        pass  # используется формой редактирования
+
+    def reload_saved(self):
+        pass
+
+    def show_previous_draft(self):
+        pass
 
     def create(self):
         ok, result = self.win.act(lambda: actions.create_memo(self.store, self.form_data(), list(self.chosen)))
@@ -344,6 +381,116 @@ class NewMemoPage(Page):
                            % (reg, doc_error), 'error')
         else:
             self.win.flash('Записка %s создана, документ Word сохранён в папку.' % reg)
+
+
+class EditMemoPage(NewMemoPage):
+    """Та же форма и предпросмотр, но отдельный экземпляр сохраняет черновик новой СЗ."""
+    def __init__(self, win):
+        self.baseline = None
+        self.pending_document = False
+        self.previous_draft = None
+        super().__init__(win)
+        self.form_title.setText('Редактирование СЗ')
+        self.submit.setText('Сохранить изменения и обновить Word')
+        self.clear_btn.hide()
+        self.signer_change.hide()
+        self.cancel_edit_btn.show()
+
+    def state(self):
+        return json.dumps([self.form_data(), self.chosen], ensure_ascii=False, sort_keys=True)
+
+    def has_unsaved_changes(self):
+        return bool(self.edit_snapshot and (self.pending_document or self.state() != self.baseline))
+
+    def show_memo(self, memo_id):
+        snapshot = actions.load_memo_for_edit(self.store, memo_id)
+        if not self.edit_snapshot or self.edit_snapshot['memo']['id'] != memo_id:
+            self.previous_draft = None
+        self.edit_snapshot = snapshot
+        self.edit_version = snapshot['version']
+        self.baseline = None
+        self.pending_document = False
+        self.chosen = [-i-1 for i in range(len(snapshot['addressees']))]
+        super().reload()
+        m = snapshot['memo']
+        self.topic.setCurrentIndex(self.topic.findData(-1))
+        self.executor.setCurrentIndex(self.executor.findData(-1))
+        self.addr_filter.clear()
+        self.executor_filter.clear()
+        self.date.setDateRange(QDate(m['year'], 1, 1), QDate(m['year'], 12, 31))
+        self.date.setDate(QDate.fromString(m['memo_date'], 'yyyy-MM-dd'))
+        rich = docx.parse_rich(m['body_rich'])
+        if rich:
+            self.body.set_paragraphs(rich)
+        else:
+            self.body.set_text(m['body'])
+        self.attachment.setPlainText(m['attachment'])
+        self.reload_saved_btn.hide()
+        self.previous_draft_btn.setVisible(self.previous_draft is not None)
+        self.submit.setEnabled(True)
+        self.submit.setText('Сохранить изменения и обновить Word')
+        self.update_preview()
+        self.baseline = self.state()
+
+    def reload(self):
+        pass  # повторный вход не должен затирать редактируемый текст
+
+    def on_external_change(self):
+        pass  # версия проверяется при сохранении; введённые данные остаются в форме
+
+    def create(self):
+        if not self.edit_snapshot:
+            return
+
+        def save():
+            try:
+                return actions.update_memo(self.store, self.edit_snapshot, self.edit_version,
+                                           self.form_data(), list(self.chosen))
+            except actions.MemoConflict as e:
+                return {'conflict': str(e)}
+
+        ok, result = self.win.act(save)
+        if not ok:
+            return
+        if result.get('conflict'):
+            self.win.flash(result['conflict'], 'error')
+            self.reload_saved_btn.show()
+            self.submit.setEnabled(False)
+            return
+        self.edit_version = result['version']
+        self.baseline = self.state()
+        self.pending_document = bool(result['document_error'])
+        if self.pending_document:
+            self.submit.setText('Повторить сохранение и обновление Word')
+            self.win.flash('Изменения сохранены в реестре, но Word не обновлён. %s '
+                           'Форма сохранена; после устранения причины нажмите повторное сохранение.'
+                           % result['document_error'], 'error')
+            return
+        memo_id = self.edit_snapshot['memo']['id']
+        self.win.navigate('memo', memo_id)
+        self.win.flash('Изменения сохранены. Документ Word обновлён; предыдущая версия сохранена в папке документа.')
+
+    def cancel_edit(self):
+        self.win.navigate('memo', self.edit_snapshot['memo']['id'])
+
+    def reload_saved(self):
+        data = self.form_data()
+        self.previous_draft = ('Текст СЗ:\n' + docx.rich_plain_text(data['body_rich'])
+                               + '\n\nПриложение:\n' + data['attachment'])
+        ok, _ = self.win.act(lambda: self.show_memo(self.edit_snapshot['memo']['id']))
+        if ok:
+            self.win.flash('СЗ перечитана. Ваш предыдущий текст доступен отдельной кнопкой для сравнения.')
+
+    def show_previous_draft(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle('Ваш предыдущий текст')
+        layout = QVBoxLayout(dialog)
+        text = QTextBrowser()
+        text.setPlainText(self.previous_draft or '')
+        layout.addWidget(text)
+        layout.addWidget(button('Закрыть', on_click=dialog.accept))
+        dialog.resize(650, 500)
+        dialog.exec_()
 
 
 # ---------- Реестр ----------
@@ -571,9 +718,9 @@ class MemoPage(Page):
 
         self.word_btn = button('Открыть Word', 'primary', self.open_word)
         self.folder_btn = button('Показать в папке', on_click=self.show_folder)
-        self.regen_btn = button('Сформировать Word заново', on_click=self.regenerate)
+        self.edit_btn = button('Редактировать', on_click=lambda: self.win.navigate('edit', self.memo_id))
         self.delete_btn = button('Удалить из реестра', 'danger', self.delete)
-        for b in (self.word_btn, self.folder_btn, self.regen_btn, self.delete_btn):
+        for b in (self.word_btn, self.folder_btn, self.edit_btn, self.delete_btn):
             lay.addWidget(b)
         lay.addStretch(1)
 
@@ -597,7 +744,7 @@ class MemoPage(Page):
         s = self.store
         self.memo = s.one('SELECT * FROM memos WHERE id = ?', (self.memo_id,))
         m = self.memo
-        for b in (self.word_btn, self.folder_btn, self.regen_btn, self.delete_btn):
+        for b in (self.word_btn, self.folder_btn, self.edit_btn, self.delete_btn):
             b.setEnabled(bool(m))
         if not m:
             self.reg.setText('Записки нет в реестре')
@@ -623,7 +770,7 @@ class MemoPage(Page):
         rows.append(('Создана', '%s в %s' % (docx.format_date(m['created_at'][:10]), esc(m['created_at'][11:16]))))
         rows.append(('Документ', '<span style="color:#6b7385">%s</span>' % esc(m['file_path']) if path else
                      '<span style="color:#b42318">Не найден в папке.</span> '
-                     'Нажмите «Сформировать Word заново».'))
+                     'Нажмите «Редактировать», затем сохраните СЗ для формирования Word.'))
         self.details.setText('<table cellspacing="0" cellpadding="3">%s</table>' % ''.join(
             '<tr><td style="color:#6b7385; padding-right:12px" valign="top">%s</td><td>%s</td></tr>' % r
             for r in rows))
@@ -643,12 +790,6 @@ class MemoPage(Page):
         path = self.store.document_path(self.memo and self.memo['file_path'])
         if path:
             show_in_folder(path)
-
-    def regenerate(self):
-        ok, _ = self.win.act(lambda: actions.regenerate_document(self.store, self.memo_id))
-        self.reload()
-        if ok:
-            self.win.flash('Документ Word сформирован заново.')
 
     def delete(self):
         reg = self.memo['reg_number']

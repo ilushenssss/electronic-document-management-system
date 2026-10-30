@@ -21,6 +21,66 @@ from test_core import seed  # noqa: E402
 
 @unittest.skipIf(QApplication is None, 'PyQt5 не установлен')
 class WindowTest(unittest.TestCase):
+    def test_edit_memo_locked_word_retry_and_conflict(self):
+        from pathlib import Path
+        from sz import actions
+        from sz.ui.window import MainWindow
+        from test_core import memo_data
+
+        root = tempfile.TemporaryDirectory()
+        self.addCleanup(root.cleanup)
+        store = Store(root.name)
+        store.open()
+        seed(store)
+        memo_id, error = actions.create_memo(store, memo_data(body='Исходный текст'), [1])
+        self.assertIsNone(error)
+        store.close()
+        app = QApplication.instance() or QApplication([])
+        win = MainWindow(lambda: root.name)
+        win.confirm = lambda message: True
+        self.addCleanup(win.close)
+        self.assertTrue(win.connect())
+        win.navigate('memo', memo_id)
+        win.pages['memo'].edit_btn.click()
+        edit = win.pages['edit']
+        self.assertIs(win.stack.currentWidget(), edit)
+        self.assertEqual(edit.body.plain_text(), 'Исходный текст')
+        self.assertEqual(edit.topic.currentData(), -1)
+        self.assertEqual(edit.executor.currentData(), -1)
+        self.assertEqual(edit.chosen, [-1])
+        self.assertFalse(edit.has_unsaved_changes())
+        edit.body.set_text('Исправленный текст')
+        path = Path(win.store.document_path(edit.edit_snapshot['memo']['file_path']))
+        owner = path.with_name('~$' + path.name)
+        owner.touch()
+        edit.submit.click()
+        self.assertIs(win.stack.currentWidget(), edit)
+        self.assertIn('Word не обновлён', win.flash_label.text())
+        self.assertEqual(edit.body.plain_text(), 'Исправленный текст')
+        self.assertTrue(edit.pending_document)
+        owner.unlink()
+        edit.submit.click()
+        self.assertIs(win.stack.currentWidget(), win.pages['memo'])
+        self.assertEqual(win.pages['memo'].reg.text(), 'НТЦ-0001-26')
+        win.pages['memo'].edit_btn.click()
+        edit.body.set_text('Мой несохранённый текст')
+        # Обновления других пользователей не затирают открытую форму.
+        win.store.write(lambda s: s.run('UPDATE memos SET body = ? WHERE id = ?', ('Правка коллеги', memo_id)))
+        edit.on_external_change()
+        self.assertEqual(edit.body.plain_text(), 'Мой несохранённый текст')
+        edit.submit.click()
+        self.assertFalse(edit.submit.isEnabled())
+        self.assertFalse(edit.reload_saved_btn.isHidden())
+        edit.reload_saved_btn.click()
+        self.assertEqual(edit.body.plain_text(), 'Правка коллеги')
+        self.assertIn('Мой несохранённый текст', edit.previous_draft)
+        edit.body.set_text('Не терять при уходе')
+        win.confirm = lambda message: False
+        win.navigate('list')
+        self.assertIs(win.stack.currentWidget(), edit)
+        win.confirm = lambda message: True
+        app.processEvents()
+
     def test_registry_page_navigation_and_filter_reset(self):
         from sz.ui.window import MainWindow
         from test_paging import fill_registry

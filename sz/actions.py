@@ -1,5 +1,8 @@
 """Действия с данными: создание СЗ, справочники, настройки. Окна только вызывают их."""
 import re
+import datetime
+import hashlib
+import json
 
 from . import docx
 from .store import StoreError
@@ -116,6 +119,110 @@ def regenerate_document(store, memo_id, new_file=False):
     if path != memo['file_path']:
         store.write(lambda s: s.run('UPDATE memos SET file_path = ? WHERE id = ?', (path, memo_id)))
     return path
+
+
+class MemoConflict(StoreError):
+    """Записка изменена или удалена после открытия формы."""
+
+
+def load_memo_for_edit(store, memo_id):
+    # Единый снимок записи и её адресатов, без изменения схемы базы.
+    store.db.execute('SAVEPOINT edit_snapshot')
+    try:
+        memo = store.one('SELECT * FROM memos WHERE id = ?', (memo_id,))
+        if not memo:
+            raise MemoConflict('СЗ удалена из реестра. Введённые данные сохранены в форме.')
+        addressees = store.memo_addressees(memo_id)
+        payload = json.dumps([memo, addressees], ensure_ascii=False, sort_keys=True)
+        version = hashlib.sha256(payload.encode('utf-8')).hexdigest()
+        return {'memo': memo, 'addressees': addressees, 'version': version}
+    finally:
+        store.db.execute('RELEASE SAVEPOINT edit_snapshot')
+
+
+def update_memo(store, snapshot, expected_version, data, addressee_keys):
+    """Обновить существующую СЗ и Word; отрицательные ключи — сохранённые значения.
+
+    Справочники могут меняться независимо: сохранённые значения не подменяются
+    текущими. Ошибка Word возвращается отдельно после успешного COMMIT базы.
+    """
+    memo_id = snapshot['memo']['id']
+    rich = docx.normalize_rich(data.get('body_rich')) if data.get('body_rich') is not None else None
+    body = docx.rich_plain_text(rich) if rich is not None else (data.get('body') or '').strip()
+    if not body:
+        raise StoreError('Заполните текст служебной записки.')
+    if not addressee_keys:
+        raise StoreError('Выберите хотя бы одного адресата.')
+    try:
+        date = datetime.date.fromisoformat(data.get('memo_date') or '')
+    except ValueError:
+        raise StoreError('Укажите корректную дату.')
+    if date.year != snapshot['memo']['year']:
+        raise StoreError('Дату можно изменить только в пределах года номера СЗ.')
+
+    def update(s):
+        current = load_memo_for_edit(s, memo_id)
+        if current['version'] != expected_version:
+            raise MemoConflict('СЗ уже изменена другим пользователем. Перечитайте её перед сохранением. '
+                               'Ваш текст остаётся в форме.')
+        old = snapshot['memo']
+        topic_id = data.get('topic_id')
+        executor_id = data.get('executor_id')
+        if topic_id == -1:
+            topic = {'id': old['topic_id'], 'name': old['topic_name']}
+        else:
+            topic = s.one('SELECT * FROM topics WHERE id = ?', (topic_id,))
+        if executor_id == -1:
+            executor = {'id': old['executor_id'], 'full_name': old['executor_name'], 'phone': old['executor_phone']}
+        else:
+            executor = s.one('SELECT * FROM employees WHERE id = ?', (executor_id,))
+        if not topic or not executor:
+            raise StoreError('Выберите тематику и исполнителя. Выбранная запись могла быть удалена.')
+        addrs = []
+        for key in addressee_keys:
+            if key < 0:
+                index = -key - 1
+                if index >= len(snapshot['addressees']):
+                    raise StoreError('Перечитайте список адресатов СЗ.')
+                addr = snapshot['addressees'][index]
+                addr = dict(addr, id=addr['addressee_id'])
+            else:
+                addr = s.one('SELECT * FROM addressees WHERE id = ?', (key,))
+                if addr and not addr['head_name_dative']:
+                    raise StoreError('У выбранного адресата не заполнена Фамилия И.О. в дательном падеже.')
+            if not addr:
+                raise StoreError('Выбранного адресата удалили. Выберите заново.')
+            addrs.append(addr)
+        values = {'memo_date': date.isoformat(), 'body': body,
+                  'body_rich': docx.dump_rich(rich) if rich else None,
+                  'attachment': (data.get('attachment') or '').strip(),
+                  'topic_id': topic['id'], 'topic_name': topic['name'],
+                  'executor_id': executor['id'], 'executor_name': executor['full_name'],
+                  'executor_phone': executor['phone'], 'addressee_id': addrs[0]['id']}
+        for field, key in [('addressee_department', 'department'), ('addressee_position', 'head_position'),
+                           ('addressee_name', 'head_name')]:
+            values[field] = '; '.join(a[key] for a in addrs)
+        s.run('UPDATE memos SET %s WHERE id = ?' % ', '.join(key + ' = ?' for key in values),
+              list(values.values()) + [memo_id])
+        s.run('DELETE FROM memo_addressees WHERE memo_id = ?', (memo_id,))
+        for order, addr in enumerate(addrs):
+            s.run('INSERT INTO memo_addressees (memo_id, ord, addressee_id, department, head_position, '
+                  'head_name, head_name_dative) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                  (memo_id, order, addr['id'], addr['department'], addr['head_position'],
+                   addr['head_name'], addr['head_name_dative']))
+        return {'document_error': None}
+
+    def publish(result):
+        memo = store.one('SELECT * FROM memos WHERE id = ?', (memo_id,))
+        try:
+            path = store.save_document(memo, memo['file_path'])
+            if path != memo['file_path']:
+                store.run('UPDATE memos SET file_path = ? WHERE id = ?', (path, memo_id))
+        except Exception as e:
+            result['document_error'] = str(e)
+        result['version'] = load_memo_for_edit(store, memo_id)['version']
+
+    return store.write(update, after_commit=publish)
 
 
 def delete_memo(store, memo_id):

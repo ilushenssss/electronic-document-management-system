@@ -115,6 +115,7 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.connect_page)
         self.pages = {
             'new': pages.NewMemoPage(self),
+            'edit': pages.EditMemoPage(self),
             'list': pages.RegistryPage(self),
             'memo': pages.MemoPage(self),
             'stats': pages.StatsPage(self),
@@ -167,6 +168,12 @@ class MainWindow(QMainWindow):
         if not has_data and not self.confirm(
                 'В папке %s ещё нет базы служебных записок. Создать новую базу в этой папке?' % folder):
             return
+        current = self.stack.currentWidget()
+        if isinstance(current, pages.EditMemoPage) and current.has_unsaved_changes():
+            if not self.confirm('Сменить общую папку? Несохранённые изменения формы будут потеряны. '
+                                'Если Word не обновлён, его потребуется обновить позже.'):
+                return
+            current.edit_snapshot = None
         QSettings().setValue('folder', folder)
         self.connect()
 
@@ -182,13 +189,18 @@ class MainWindow(QMainWindow):
     def navigate(self, page, arg=None):
         if not self.store:
             return
+        current = self.stack.currentWidget()
+        if isinstance(current, pages.EditMemoPage) and current.has_unsaved_changes():
+            if not self.confirm('Уйти из редактирования? Несохранённые изменения формы будут потеряны. '
+                                'Если Word не обновлён, его потребуется обновить позже.'):
+                return
         self.flash_label.hide()
         widget = self.pages[page]
-        active = 'list' if page == 'memo' else page
+        active = 'list' if page in ('memo', 'edit') else page
         for key, b in self.nav_buttons.items():
             b.setChecked(key == active)
         try:
-            if page == 'memo':
+            if page in ('memo', 'edit'):
                 widget.show_memo(arg)
             elif page == 'dirs':
                 widget.show_tab(arg or 'employees')
@@ -197,6 +209,7 @@ class MainWindow(QMainWindow):
                 widget.reload()
         except Exception as e:
             self.report(e)
+            return
         self.stack.setCurrentWidget(widget)
 
     def open_link(self, href):
@@ -270,6 +283,13 @@ class MainWindow(QMainWindow):
         open_file(path)
 
     def closeEvent(self, event):
+        current = self.stack.currentWidget()
+        if isinstance(current, pages.EditMemoPage) and current.has_unsaved_changes():
+            if not self.confirm('Закрыть приложение? Несохранённые изменения формы будут потеряны. '
+                                'Если Word не обновлён, его потребуется обновить позже.'):
+                event.ignore()
+                return
         if self.store:
             self.store.close()
         super().closeEvent(event)
+
