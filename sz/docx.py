@@ -199,7 +199,9 @@ def memo_blocks(m, addressees, preview=False):
     # Адресаты: должность и Фамилия И.О. отдельными строками
     if addressees:
         blocks = []
-        for a in addressees:
+        for i, a in enumerate(addressees):
+            if i:
+                blocks.append({'blank': True})
             blocks.append({'text': a['head_position'], 'align': 'right'})
             # У адресатов из перенесённого журнала, которых нет в справочнике, ФИО нет
             if addressee_name(a):
