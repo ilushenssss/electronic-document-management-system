@@ -18,7 +18,7 @@ DIRECTORIES = {
     'addressees': {
         'title': 'Адресаты',
         'fields': [('department', 'Отдел', True, False),
-                   ('head_position', 'Должность в документе, например «Начальнику отдела»', True, False),
+                   ('head_position', 'Должность в документе, например «Начальнику отдела»', True, True),
                    ('head_name', 'ФИО руководителя полностью', True, False),
                    ('head_name_dative', 'Фамилия И.О. в дательном падеже, например «Петрову П.П.»',
                     True, False)],
@@ -243,4 +243,5 @@ def month_counts(store, year):
                        'FROM memos WHERE year = ? GROUP BY m', (year,)):
         counts[r['m'] - 1] = r['n']
     return counts
+
 

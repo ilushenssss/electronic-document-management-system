@@ -43,6 +43,18 @@ class WindowTest(unittest.TestCase):
             self.assertFalse(win.flash_label.isVisible(), win.flash_label.text())
 
         new = win.pages['new']
+        # Адресаты используют то же многострочное поле, что и сотрудники.
+        from PyQt5.QtWidgets import QPlainTextEdit
+        win.navigate('dirs', 'addressees')
+        tab = win.pages['dirs'].tab_widgets['addressees']
+        tab.set_editing(tab.rows[0])
+        position = tab.inputs['head_position']
+        self.assertIsInstance(position, QPlainTextEdit)
+        position.setPlainText('Начальнику\nотдела кадров')
+        tab.save()
+        tab.set_editing(tab.rows[0])
+        self.assertEqual(position.toPlainText(), 'Начальнику\nотдела кадров')
+        self.assertEqual(len(tab.rows), 1)
         win.navigate('new')
         new.topic.setCurrentIndex(1)
         new.executor.setCurrentIndex(1)
@@ -73,3 +85,4 @@ class WindowTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+

@@ -14,7 +14,7 @@ def twips(cm):
     return int(cm * CM + 0.5)
 
 
-TEXT_WIDTH = 11906 - twips(3) - twips(1.5)  # ширина текста между полями
+TEXT_WIDTH = 11906 - twips(2.5) - twips(1)  # ширина текста между полями
 MONTHS_GEN = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля',
               'августа', 'сентября', 'октября', 'ноября', 'декабря']
 
@@ -216,11 +216,12 @@ def memo_blocks(m, addressees, preview=False):
     if rich:
         # По левому краю - без явного выравнивания, как у остальных абзацев
         add(*[{'runs': p['runs'], 'align': None if p['align'] == 'left' else p['align'],
-               'first_line': p['indent']} for p in rich])
+               'first_line': p['indent'], 'line_spacing': 360} for p in rich])
     elif body:
-        add(*[{'text': line, 'align': 'both', 'first_line': True} for line in body])
+        add(*[{'text': line, 'align': 'both', 'first_line': True, 'line_spacing': 360} for line in body])
     elif preview:
-        add({'text': {'ph': 'Текст служебной записки'}, 'align': 'both', 'first_line': True})
+        add({'text': {'ph': 'Текст служебной записки'}, 'align': 'both', 'first_line': True,
+             'line_spacing': 360})
 
     attachment = split_lines(m.get('attachment'))
     if attachment:
@@ -236,9 +237,9 @@ def memo_blocks(m, addressees, preview=False):
 
     executor_name = m.get('executor_name')
     executor = [{'text': v(executor_name and 'Исп. %s' % short_name(executor_name),
-                           'Исп. Фамилия И.О.'), 'size': 10}]
+                           'Исп. Фамилия И.О.'), 'size': 10, 'footer': True}]
     if m.get('executor_phone'):
-        executor.append({'text': 'Тел. %s' % m['executor_phone'], 'size': 10})
+        executor.append({'text': 'Тел. %s' % m['executor_phone'], 'size': 10, 'footer': True})
     add(*executor)
 
     out = []
@@ -287,6 +288,8 @@ def block_xml(blk):
         runs = blk.get('runs') or [{'text': blk.get('text'), 'bold': blk.get('bold')}]
     if blk.get('first_line'):
         ppr.append('<w:ind w:firstLine="%d"/>' % twips(1.25))
+    if blk.get('line_spacing'):
+        ppr.append('<w:spacing w:after="0" w:line="%d" w:lineRule="auto"/>' % blk['line_spacing'])
     if blk.get('align'):
         ppr.append('<w:jc w:val="%s"/>' % blk['align'])
     size = blk.get('size') or FONT_SIZE
@@ -296,15 +299,54 @@ def block_xml(blk):
 
 
 def document_xml(memo, addressees):
-    body = ''.join(block_xml(b) for b in memo_blocks(memo, addressees))
+    blocks = memo_blocks(memo, addressees)
+    while blocks and (blocks[-1].get('footer') or blocks[-1].get('blank')):
+        blocks.pop()
+    body = ''.join(block_xml(b) for b in blocks)
     return ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+            'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
             '<w:body>%s'
-            '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/>'
+            '<w:sectPr><w:footerReference w:type="default" r:id="rId2"/>'
+            '<w:pgSz w:w="11906" w:h="16838"/>'
             '<w:pgMar w:top="%d" w:right="%d" w:bottom="%d" w:left="%d" '
-            'w:header="708" w:footer="708" w:gutter="0"/>'
+            'w:header="0" w:footer="%d" w:gutter="0"/>'
             '</w:sectPr></w:body></w:document>'
-            % (body, twips(2), twips(1.5), twips(2), twips(3)))
+            % (body, twips(1.5), twips(1), twips(1), twips(2.5), twips(0.2)))
+
+
+def footer_xml(memo):
+    """Исполнитель у нижнего края только последней страницы.
+
+    PAGE/NUMPAGES вычисляет Word после разбиения текста на страницы;
+    поэтому подбирать пустые строки под объём записки не требуется.
+    """
+    def field(instruction):
+        return ('<w:r><w:fldChar w:fldCharType="begin" w:dirty="true"/></w:r>'
+                '<w:r><w:instrText xml:space="preserve">%s</w:instrText></w:r>'
+                '<w:r><w:fldChar w:fldCharType="end"/></w:r>') % xml(instruction)
+
+    paragraphs = []
+    for b in memo_blocks(memo, []):
+        if not b.get('footer') or not b.get('text'):
+            continue
+        text = b['text']
+        # Кавычки и обратные слеши экранируются также для языка полей Word.
+        literal = text.replace('\\', '\\\\').replace('"', '\\"')
+        paragraphs.append(
+            '<w:p><w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/>'
+            '<w:rPr><w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr></w:pPr>'
+            '<w:r><w:fldChar w:fldCharType="begin" w:dirty="true"/></w:r>'
+            '<w:r><w:instrText xml:space="preserve"> IF </w:instrText></w:r>'
+            + field(' PAGE ') +
+            '<w:r><w:instrText xml:space="preserve"> = </w:instrText></w:r>'
+            + field(' NUMPAGES ') +
+            '<w:r><w:instrText xml:space="preserve">%s</w:instrText></w:r>' % xml(' "%s" "" ' % literal) +
+            '<w:r><w:fldChar w:fldCharType="separate"/></w:r>' + run_xml({'text': text}, 10) +
+            '<w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>')
+    return ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            + ''.join(paragraphs) + '</w:ftr>')
 
 
 STYLES_XML = (
@@ -328,6 +370,8 @@ CONTENT_TYPES_XML = (
     '<Default Extension="xml" ContentType="application/xml"/>'
     '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
     '<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>'
+    '<Override PartName="/word/footer1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"/>'
+    '<Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/>'
     '</Types>')
 
 ROOT_RELS_XML = (
@@ -340,6 +384,8 @@ DOCUMENT_RELS_XML = (
     '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
     '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
     '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
+    '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/>'
+    '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/>'
     '</Relationships>')
 
 
@@ -356,6 +402,11 @@ def build_docx(memo, addressees, org_name=''):
         z.writestr('word/document.xml', document_xml(memo, addressees))
         z.writestr('word/_rels/document.xml.rels', DOCUMENT_RELS_XML)
         z.writestr('word/styles.xml', STYLES_XML)
+        z.writestr('word/footer1.xml', footer_xml(memo))
+        z.writestr('word/settings.xml',
+                   '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                   '<w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                   '<w:updateFields w:val="true"/></w:settings>')
     return buf.getvalue()
 
 
@@ -370,3 +421,4 @@ def safe_name(text, limit=60):
 def file_base_name(memo):
     """Имя папки и файла документа: номер СЗ, например НТЦ-0001-26."""
     return safe_name(memo['reg_number'])
+

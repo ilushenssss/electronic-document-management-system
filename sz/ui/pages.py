@@ -491,7 +491,7 @@ class MemoPage(Page):
             ('Тематика', esc(m['topic_name'])),
             ('Кому', '<br>'.join(esc(a['department']) + (
                 '<br><span style="color:#6b7385">%s %s</span>' % (
-                    esc(a['head_position']), esc(docx.addressee_name(a)))
+                    esc(a['head_position']).replace('\n', '<br>'), esc(docx.addressee_name(a)))
                 if (a['head_position'], docx.addressee_name(a)) != (a['department'], '') else '')
                 for a in addressees)),
         ]
@@ -937,3 +937,4 @@ class DirsPage(Page):
             tab.on_external_change()
         else:
             tab.reload()
+

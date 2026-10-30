@@ -60,8 +60,10 @@ class DocxTest(unittest.TestCase):
         xml = z.read('word/document.xml').decode('utf-8')
         minidom.parseString(xml)  # корректный XML
         for text in ('АО «НТЦ»', 'СЛУЖЕБНАЯ ЗАПИСКА', '№НТЦ-0001-26', 'Тема &lt;&amp;&gt;', 'Петрову П.П.',
-                     'Уважаемый Пётр Петрович!', 'Приложение: ', 'Сидоров С.С.', 'Исп. Иванов И.И.'):
+                     'Уважаемый Пётр Петрович!', 'Приложение: ', 'Сидоров С.С.'):
             self.assertIn(text, xml)
+        self.assertNotIn('Исп. Иванов И.И.', xml)
+        self.assertIn('Исп. Иванов И.И.', z.read('word/footer1.xml').decode('utf-8'))
 
     def test_preview_placeholders(self):
         blocks = docx.memo_blocks({'reg_number': 'X'}, [], preview=True)
@@ -233,3 +235,4 @@ class ConcurrencyTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+

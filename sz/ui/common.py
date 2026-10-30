@@ -175,6 +175,8 @@ def sheet_html(blocks):
     for b in blocks:
         size = (b.get('size') or docx.FONT_SIZE) * SHEET_SCALE
         style = 'margin:0; font-size:%.1fpt;' % size
+        if b.get('line_spacing'):
+            style += ' line-height:%d%%;' % (b['line_spacing'] * 100 // 240)
         if b.get('blank'):
             parts.append('<p style="%s">&nbsp;</p>' % style)
         elif b.get('split'):
@@ -339,3 +341,4 @@ class BarList(QWidget):
                               % (r['label'], r['n'], round(r['n'] / self.total * 100)), self)
         else:
             QToolTip.hideText()
+
