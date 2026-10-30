@@ -350,6 +350,7 @@ class NewMemoPage(Page):
 
 class RegistryPage(Page):
     BODY_PREVIEW_LIMIT = 100  # символов текста до многоточия
+    TOPIC_WIDTH_CHARS = 10  # ориентир для ширины колонки тематики
 
     def __init__(self, win):
         super().__init__(win)
@@ -397,9 +398,15 @@ class RegistryPage(Page):
         self.table = read_only_table(['Номер', 'Дата', 'Тематика', 'Текст СЗ', 'Кому', 'Исполнитель'])
         self.table.setShowGrid(True)
         header = self.table.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.Stretch)
+        header.setSectionResizeMode(QHeaderView.Interactive)
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.Fixed)
+        header.setSectionResizeMode(3, QHeaderView.Stretch)
+        char_width = self.table.fontMetrics().averageCharWidth()
+        self.table.setColumnWidth(2, char_width * self.TOPIC_WIDTH_CHARS + 16)
+        for col in (4, 5):
+            self.table.setColumnWidth(col, char_width * 18 + 16)
         self.table.cellDoubleClicked.connect(lambda row, col: self.open_selected())
         self.table.itemSelectionChanged.connect(self.update_buttons)
         lay.addWidget(self.table, 1)
@@ -453,8 +460,13 @@ class RegistryPage(Page):
             # показываем буквально, исходные переносы сохраняем.
             tooltip = '<qt>%s</qt>' % esc(body).replace('\n', '<br>') if body else ''
             for col, value in enumerate(values):
+                if col == 2:
+                    value = self.table.fontMetrics().elidedText(
+                        ' '.join(str(value or '').split()), Qt.ElideRight,
+                        self.table.columnWidth(2) - 12)
                 item = cell(value, m['id'])
-                item.setToolTip(tooltip)
+                item.setToolTip(('<qt><b>Тематика:</b> %s<br><br>%s</qt>' % (
+                    esc(m['topic_name']), esc(body).replace('\n', '<br>'))) if col == 2 else tooltip)
                 self.table.setItem(row, col, item)
             if m['id'] == selected:
                 self.table.selectRow(row)
