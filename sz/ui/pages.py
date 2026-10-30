@@ -152,13 +152,23 @@ class NewMemoPage(Page):
                            button('Изменить', 'link', lambda: self.win.navigate('dirs', 'employees'))))
 
         lay.addWidget(field_label('Исполнитель'))
+        self.executor_filter = QLineEdit()
+        self.executor_filter.setPlaceholderText('Найти сотрудника по ФИО или телефону')
+        self.executor_filter.setClearButtonEnabled(True)
+        self.executor_filter.textChanged.connect(self.filter_executors)
+        lay.addWidget(self.executor_filter)
         self.executor = QComboBox()
         lay.addWidget(self.executor)
+        self.executor_empty = label('Сотрудники не найдены. Измените или очистите поиск.', 'hint', wrap=True)
+        self.executor_empty.hide()
+        lay.addWidget(self.executor_empty)
 
         self.submit = button('Создать и сформировать Word', 'primary', self.create)
+        self.clear_btn = button('Очистить', on_click=self.clear_form)
         self.number_note = label('', 'hint', wrap=True)
         lay.addSpacing(6)
-        lay.addWidget(hbox(self.submit, self.number_note))
+        lay.addWidget(hbox(self.submit, self.clear_btn))
+        lay.addWidget(self.number_note)
         lay.addStretch(1)
 
         self.sheet = SheetView()
@@ -189,6 +199,7 @@ class NewMemoPage(Page):
         fill_combo(self.executor, self.employees,
                    lambda e: e['full_name'] + (', ' + e['phone'] if e['phone'] else ''),
                    'Выберите сотрудника')
+        self.filter_executors()
         ids = {a['id'] for a in self.addressees}
         self.chosen = [i for i in self.chosen if i in ids]
         self.addr_list.blockSignals(True)
@@ -269,6 +280,33 @@ class NewMemoPage(Page):
             'attachment': self.attachment.toPlainText(),
         }
 
+    def filter_executors(self):
+        q = self.executor_filter.text().strip().casefold()
+        matches = 0
+        for i in range(1, self.executor.count()):
+            match = not q or q in self.executor.itemText(i).casefold()
+            self.executor.view().setRowHidden(i, not match)
+            matches += int(match)
+        self.executor_empty.setVisible(bool(q) and not matches)
+
+    def clear_form(self):
+        """Очистить пользовательский ввод; дата и подписант остаются автоматическими."""
+        self.topic.setCurrentIndex(0)
+        self.executor.setCurrentIndex(0)
+        self.addr_filter.clear()
+        self.executor_filter.clear()
+        self.chosen = []
+        self.addr_list.blockSignals(True)
+        for i in range(self.addr_list.count()):
+            self.addr_list.item(i).setCheckState(Qt.Unchecked)
+        self.addr_list.blockSignals(False)
+        self.update_picker()
+        self.body.reset()
+        self.attachment.clear()
+        self.date.setDate(QDate.currentDate())
+        self.update_preview()
+        self.topic.setFocus()
+
     def update_preview(self):
         if not self.store or not hasattr(self, 'prefix'):
             return
@@ -325,6 +363,10 @@ class RegistryPage(Page):
         self.q.setClearButtonEnabled(True)
         self.topic = QComboBox()
         self.year = QComboBox()
+        self.executor_filter = QComboBox()
+        self.executor_filter.setAccessibleName('Фильтр по исполнителю')
+        self.addressee_filter = QComboBox()
+        self.addressee_filter.setAccessibleName('Фильтр по адресату')
         self.reset = button('Сбросить', on_click=self.reset_filters)
         bar = QHBoxLayout()
         bar.setSpacing(8)
@@ -333,6 +375,13 @@ class RegistryPage(Page):
         bar.addWidget(self.year, 1)
         bar.addWidget(self.reset)
         lay.addLayout(bar)
+        people_bar = QHBoxLayout()
+        people_bar.setSpacing(8)
+        people_bar.addWidget(label('Исполнитель'))
+        people_bar.addWidget(self.executor_filter, 1)
+        people_bar.addWidget(label('Адресат'))
+        people_bar.addWidget(self.addressee_filter, 1)
+        lay.addLayout(people_bar)
 
         # Поиск по мере ввода, с небольшой задержкой
         self.timer = QTimer(self)
@@ -342,8 +391,11 @@ class RegistryPage(Page):
         self.q.textChanged.connect(lambda: self.timer.start())
         self.topic.currentIndexChanged.connect(lambda: self.reload())
         self.year.currentIndexChanged.connect(lambda: self.reload())
+        self.executor_filter.currentIndexChanged.connect(lambda: self.reload())
+        self.addressee_filter.currentIndexChanged.connect(lambda: self.reload())
 
-        self.table = read_only_table(['Номер', 'Дата', 'Тематика', 'Кому', 'Исполнитель', 'Текст СЗ'])
+        self.table = read_only_table(['Номер', 'Дата', 'Тематика', 'Текст СЗ', 'Кому', 'Исполнитель'])
+        self.table.setShowGrid(True)
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.Stretch)
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
@@ -360,6 +412,13 @@ class RegistryPage(Page):
     def reload(self):
         s = self.store
         fill_combo(self.topic, s.all('SELECT * FROM topics ORDER BY name'), lambda t: t['name'], 'Все тематики')
+        # Исторические значения из СЗ доступны и после изменения/удаления справочника.
+        fill_combo(self.executor_filter, s.all(
+            "SELECT DISTINCT executor_name AS id FROM memos WHERE executor_name <> '' ORDER BY executor_name"),
+            lambda r: r['id'], 'Все исполнители')
+        fill_combo(self.addressee_filter, s.all(
+            "SELECT DISTINCT department AS id FROM memo_addressees WHERE department <> '' ORDER BY department"),
+            lambda r: r['id'], 'Все адресаты')
         years = [r['year'] for r in s.all('SELECT DISTINCT year FROM memos ORDER BY year DESC')]
         current = self.year.currentData()
         self.year.blockSignals(True)
@@ -371,7 +430,8 @@ class RegistryPage(Page):
         self.year.blockSignals(False)
 
         q = self.q.text().strip()
-        memos = actions.search_memos(s, q, self.topic.currentData(), self.year.currentData())
+        memos = actions.search_memos(s, q, self.topic.currentData(), self.year.currentData(),
+                                    self.executor_filter.currentData(), self.addressee_filter.currentData())
         addr = {}
         for a in s.all('SELECT * FROM memo_addressees ORDER BY memo_id, ord'):
             addr.setdefault(a['memo_id'], []).append(a)
@@ -383,13 +443,12 @@ class RegistryPage(Page):
             lst = addr.get(m['id'], [])
             to = '\n'.join(a['department'] for a in lst[:2]) + \
                 ('\nи ещё %d' % (len(lst) - 2) if len(lst) > 2 else '')
-            values = [m['reg_number'], docx.format_date(m['memo_date']), m['topic_name'], to,
-                      m['executor_name']]
             body = m.get('body') or ''
             compact = ' '.join(body.split())
             preview = (compact[:self.BODY_PREVIEW_LIMIT].rstrip() + '…'
                        if len(compact) > self.BODY_PREVIEW_LIMIT else compact)
-            values.append(preview)
+            values = [m['reg_number'], docx.format_date(m['memo_date']), m['topic_name'],
+                      preview, to, m['executor_name']]
             # Подсказка доступна над любой ячейкой записки; теги из текста
             # показываем буквально, исходные переносы сохраняем.
             tooltip = '<qt>%s</qt>' % esc(body).replace('\n', '<br>') if body else ''
@@ -401,7 +460,8 @@ class RegistryPage(Page):
                 self.table.selectRow(row)
         self.table.resizeRowsToContents()
 
-        filtered = bool(q or self.topic.currentData() or self.year.currentData())
+        filtered = bool(q or self.topic.currentData() or self.year.currentData()
+                        or self.executor_filter.currentData() or self.addressee_filter.currentData())
         self.reset.setVisible(filtered)
         if not total:
             self.count.setText('Здесь появятся созданные служебные записки.')
@@ -412,12 +472,16 @@ class RegistryPage(Page):
         self.update_buttons()
 
     def reset_filters(self):
-        for w in (self.q, self.topic, self.year):
+        self.timer.stop()
+        widgets = (self.q, self.topic, self.year, self.executor_filter, self.addressee_filter)
+        for w in widgets:
             w.blockSignals(True)
         self.q.clear()
         self.topic.setCurrentIndex(0)
         self.year.setCurrentIndex(0)
-        for w in (self.q, self.topic, self.year):
+        self.executor_filter.setCurrentIndex(0)
+        self.addressee_filter.setCurrentIndex(0)
+        for w in widgets:
             w.blockSignals(False)
         self.reload()
 

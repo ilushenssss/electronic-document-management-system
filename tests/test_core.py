@@ -136,6 +136,32 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(actions.month_counts(self.store, 2026)[2], 1)
         self.assertEqual(actions.group_counts(self.store, 'addressee', 2026), [{'label': 'Отдел кадров', 'n': 2}])
 
+    def test_registry_filters_use_saved_executor_and_all_addressees(self):
+        seed(self.store)
+        actions.save_directory_row(self.store, 'employees', {
+            'full_name': 'Иванов Иван Иванович', 'phone': '56-78'})
+        actions.save_directory_row(self.store, 'addressees', {
+            'department': 'Бухгалтерия', 'head_position': 'Главному бухгалтеру',
+            'head_name': 'Смирнова Анна Ивановна', 'head_name_dative': 'Смирновой А.И.'})
+        first, _ = actions.create_memo(self.store, memo_data(body='Оборудование'), [1, 2])
+        data = memo_data('2027-01-01', 'Материалы')
+        data['executor_id'] = 2
+        second, _ = actions.create_memo(self.store, data, [1])
+
+        def ids(**kwargs):
+            return [m['id'] for m in actions.search_memos(self.store, **kwargs)]
+
+        self.assertEqual(ids(executor_name='Иванов Иван Иванович'), [second])
+        self.assertEqual(ids(addressee_department='Бухгалтерия'), [first])
+        self.assertEqual(ids(addressee_department='Отдел кадров'), [second, first])
+        self.assertEqual(ids(executor_name='Иванов Иван Иванович', addressee_department='Бухгалтерия'), [])
+        self.assertEqual(ids(executor_name='Сидоров Сидор Сидорович', addressee_department='Бухгалтерия',
+                             topic_id=1, year=2026, q='ОБОРУДОВАНИЕ'), [first])
+        actions.delete_directory_row(self.store, 'addressees', 2)
+        actions.delete_directory_row(self.store, 'employees', 2)
+        self.assertEqual(ids(addressee_department='Бухгалтерия'), [first])
+        self.assertEqual(ids(executor_name='Иванов Иван Иванович'), [second])
+
 
 class MigrationTest(unittest.TestCase):
     def test_old_database(self):

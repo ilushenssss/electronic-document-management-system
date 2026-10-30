@@ -201,7 +201,7 @@ def save_settings(store, org_name, city, prefix, output_dir):
     store.write(save)
 
 
-def search_memos(store, q='', topic_id=None, year=None):
+def search_memos(store, q='', topic_id=None, year=None, executor_name=None, addressee_department=None):
     sql = 'SELECT * FROM memos WHERE 1=1'
     params = []
     if topic_id:
@@ -210,6 +210,13 @@ def search_memos(store, q='', topic_id=None, year=None):
     if year:
         sql += ' AND year = ?'
         params.append(int(year))
+    if executor_name:
+        sql += ' AND executor_name = ?'
+        params.append(executor_name)
+    if addressee_department:
+        sql += (' AND EXISTS (SELECT 1 FROM memo_addressees a '
+                'WHERE a.memo_id = memos.id AND a.department = ?)')
+        params.append(addressee_department)
     memos = store.all(sql + ' ORDER BY year DESC, number DESC', params)
     if q:
         # LIKE в SQLite не учитывает регистр кириллицы, поэтому ищем в Python
