@@ -237,7 +237,9 @@ def memo_blocks(m, addressees, preview=False):
         position = split_lines(m.get('signer_position'))
         name = v(short_name(m.get('signer_name')), 'Фамилия И.О.')
         last = position[-1] if position else v('', 'Должность подписанта')
-        add(*([{'text': line} for line in position[:-1]] + [{'split': [last, name]}]))
+        # Одна пустая строка добавляется между разделами, ещё одна — здесь.
+        add(*([{'blank': True}] + [{'text': line} for line in position[:-1]]
+              + [{'split': [last, name]}]))
 
     executor_name = m.get('executor_name')
     executor = [{'text': v(executor_name and 'Исп. %s' % short_name(executor_name),
