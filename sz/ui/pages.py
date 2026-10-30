@@ -311,6 +311,8 @@ class NewMemoPage(Page):
 # ---------- Реестр ----------
 
 class RegistryPage(Page):
+    BODY_PREVIEW_LIMIT = 100  # символов текста до многоточия
+
     def __init__(self, win):
         super().__init__(win)
         lay = page_layout(self)
@@ -341,7 +343,7 @@ class RegistryPage(Page):
         self.topic.currentIndexChanged.connect(lambda: self.reload())
         self.year.currentIndexChanged.connect(lambda: self.reload())
 
-        self.table = read_only_table(['Номер', 'Дата', 'Тематика', 'Кому', 'Исполнитель'])
+        self.table = read_only_table(['Номер', 'Дата', 'Тематика', 'Кому', 'Исполнитель', 'Текст СЗ'])
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.Stretch)
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
@@ -383,8 +385,18 @@ class RegistryPage(Page):
                 ('\nи ещё %d' % (len(lst) - 2) if len(lst) > 2 else '')
             values = [m['reg_number'], docx.format_date(m['memo_date']), m['topic_name'], to,
                       m['executor_name']]
+            body = m.get('body') or ''
+            compact = ' '.join(body.split())
+            preview = (compact[:self.BODY_PREVIEW_LIMIT].rstrip() + '…'
+                       if len(compact) > self.BODY_PREVIEW_LIMIT else compact)
+            values.append(preview)
+            # Подсказка доступна над любой ячейкой записки; теги из текста
+            # показываем буквально, исходные переносы сохраняем.
+            tooltip = '<qt>%s</qt>' % esc(body).replace('\n', '<br>') if body else ''
             for col, value in enumerate(values):
-                self.table.setItem(row, col, cell(value, m['id']))
+                item = cell(value, m['id'])
+                item.setToolTip(tooltip)
+                self.table.setItem(row, col, item)
             if m['id'] == selected:
                 self.table.selectRow(row)
         self.table.resizeRowsToContents()

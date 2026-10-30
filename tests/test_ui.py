@@ -79,6 +79,27 @@ class WindowTest(unittest.TestCase):
         win.check_changes()
         self.assertEqual(win.pages['list'].table.item(0, 2).text(), 'Изменено')
 
+        # Полный текст показывается над любой ячейкой, а в колонке — краткий.
+        registry = win.pages['list']
+        self.assertEqual(registry.table.horizontalHeaderItem(5).text(), 'Текст СЗ')
+        self.assertEqual(registry.table.item(0, 5).text(), 'Прошу согласовать.')
+        body = '<важно> & проверка\n' + 'Длинный текст записки. ' * 20
+        win.store.write(lambda s: s.run('UPDATE memos SET body = ?', (body,)))
+        registry.reload()
+        compact = ' '.join(body.split())
+        self.assertEqual(registry.table.item(0, 5).text(), compact[:100].rstrip() + '…')
+        for col in range(registry.table.columnCount()):
+            tooltip = registry.table.item(0, col).toolTip()
+            self.assertIn('&lt;важно&gt; &amp; проверка<br>', tooltip)
+            self.assertIn(body.split('\n')[1], tooltip)
+        registry.table.selectRow(0)
+        registry.table.cellDoubleClicked.emit(0, 5)
+        self.assertIs(win.stack.currentWidget(), win.pages['memo'])
+        win.navigate('list')
+        registry.table.selectRow(0)
+        registry.open_btn.click()
+        self.assertIs(win.stack.currentWidget(), win.pages['memo'])
+
         win.close()
         shutil.rmtree(root, ignore_errors=True)
 
