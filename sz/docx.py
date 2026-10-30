@@ -6,6 +6,7 @@ import zipfile
 
 FONT = 'Arial'
 FONT_SIZE = 14  # pt
+EXECUTOR_FONT_SIZE = 8  # исполнитель и телефон, включая обновляемые поля Word
 CM = 567  # твипов в сантиметре
 
 
@@ -237,9 +238,9 @@ def memo_blocks(m, addressees, preview=False):
 
     executor_name = m.get('executor_name')
     executor = [{'text': v(executor_name and 'Исп. %s' % short_name(executor_name),
-                           'Исп. Фамилия И.О.'), 'size': 10, 'footer': True}]
+                           'Исп. Фамилия И.О.'), 'size': EXECUTOR_FONT_SIZE, 'footer': True}]
     if m.get('executor_phone'):
-        executor.append({'text': 'Тел. %s' % m['executor_phone'], 'size': 10, 'footer': True})
+        executor.append({'text': 'Тел. %s' % m['executor_phone'], 'size': EXECUTOR_FONT_SIZE, 'footer': True})
     add(*executor)
 
     out = []
@@ -321,10 +322,25 @@ def footer_xml(memo):
     PAGE/NUMPAGES вычисляет Word после разбиения текста на страницы;
     поэтому подбирать пустые строки под объём записки не требуется.
     """
-    def field(instruction):
-        return ('<w:r><w:fldChar w:fldCharType="begin" w:dirty="true"/></w:r>'
-                '<w:r><w:instrText xml:space="preserve">%s</w:instrText></w:r>'
-                '<w:r><w:fldChar w:fldCharType="end"/></w:r>') % xml(instruction)
+    # Word берёт формат результата обновляемого IF с первого символа
+    # инструкции при CHARFORMAT. Размер одного кешированного результата
+    # или знака абзаца не защищает от наследования Normal (14 пт).
+    size = EXECUTOR_FONT_SIZE * 2
+    rpr = ('<w:rPr><w:rFonts w:ascii="{f}" w:hAnsi="{f}" w:eastAsia="{f}" w:cs="{f}"/>'
+           '<w:sz w:val="{s}"/><w:szCs w:val="{s}"/></w:rPr>').format(f=FONT, s=size)
+
+    def run(content):
+        return '<w:r>' + rpr + content + '</w:r>'
+
+    def instruction(text):
+        return run('<w:instrText xml:space="preserve">%s</w:instrText>' % xml(text))
+
+    def marker(kind):
+        return run('<w:fldChar w:fldCharType="%s"%s/>' %
+                   (kind, ' w:dirty="true"' if kind == 'begin' else ''))
+
+    def field(text):
+        return marker('begin') + instruction(text) + marker('end')
 
     paragraphs = []
     for b in memo_blocks(memo, []):
@@ -335,15 +351,11 @@ def footer_xml(memo):
         literal = text.replace('\\', '\\\\').replace('"', '\\"')
         paragraphs.append(
             '<w:p><w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/>'
-            '<w:rPr><w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr></w:pPr>'
-            '<w:r><w:fldChar w:fldCharType="begin" w:dirty="true"/></w:r>'
-            '<w:r><w:instrText xml:space="preserve"> IF </w:instrText></w:r>'
-            + field(' PAGE ') +
-            '<w:r><w:instrText xml:space="preserve"> = </w:instrText></w:r>'
-            + field(' NUMPAGES ') +
-            '<w:r><w:instrText xml:space="preserve">%s</w:instrText></w:r>' % xml(' "%s" "" ' % literal) +
-            '<w:r><w:fldChar w:fldCharType="separate"/></w:r>' + run_xml({'text': text}, 10) +
-            '<w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>')
+            + rpr + '</w:pPr>' + marker('begin') + instruction(' IF ')
+            + field(' PAGE ') + instruction(' = ') + field(' NUMPAGES ')
+            + instruction(' "%s" "" \\* CHARFORMAT ' % literal)
+            + marker('separate') + run_xml({'text': text}, EXECUTOR_FONT_SIZE)
+            + marker('end') + '</w:p>')
     return ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
             '<w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
             + ''.join(paragraphs) + '</w:ftr>')

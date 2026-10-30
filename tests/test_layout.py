@@ -18,6 +18,22 @@ W = '{%s}' % NS['w']
 
 
 class LayoutTest(unittest.TestCase):
+    def test_executor_font_applies_to_field_instructions_and_results(self):
+        from unittest.mock import patch
+        for size in (8, 10):
+            with self.subTest(size=size), patch.object(docx, 'EXECUTOR_FONT_SIZE', size):
+                memo = {'executor_name': 'Иванов Иван Иванович', 'executor_phone': '12-34'}
+                footer = ET.fromstring(docx.footer_xml(memo))
+                for run in footer.findall('.//w:r', NS):
+                    self.assertEqual(run.find('w:rPr/w:sz', NS).get(W + 'val'), str(size * 2))
+                    self.assertEqual(run.find('w:rPr/w:szCs', NS).get(W + 'val'), str(size * 2))
+                for p in footer.findall('w:p', NS):
+                    instruction = ''.join(e.text or '' for e in p.findall('.//w:instrText', NS))
+                    self.assertIn('\\* CHARFORMAT', instruction)
+                blocks = [b for b in docx.memo_blocks(memo, []) if b.get('footer')]
+                self.assertTrue(blocks)
+                self.assertTrue(all(b['size'] == size for b in blocks))
+
     def test_document_parts_and_layout(self):
         for rich in (None, json.dumps([{'runs': [{'text': 'Тело', 'bold': True}],
                                        'align': 'both', 'indent': True}])):
