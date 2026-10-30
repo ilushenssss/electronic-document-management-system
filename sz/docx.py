@@ -1,12 +1,13 @@
 """Формирование Word-документа (.docx) служебной записки без внешних библиотек."""
 import io
 import json
+import math
 import re
 import zipfile
 
 FONT = 'Arial'
 FONT_SIZE = 14  # pt
-EXECUTOR_FONT_SIZE = 8  # исполнитель и телефон, включая обновляемые поля Word
+EXECUTOR_FONT_SIZE = 11  # исполнитель и телефон, включая обновляемые поля Word
 CM = 567  # твипов в сантиметре
 
 
@@ -299,7 +300,28 @@ def block_xml(blk):
     return '<w:p><w:pPr>%s%s</w:pPr>%s</w:p>' % (''.join(ppr), rpr_default, body)
 
 
+def footer_geometry(memo):
+    """Место под печатаемый колонтитул: отступ от края, строки и зазор.
+
+    Запас по ширине учитывает длинное ФИО/телефон без зависимости от Qt.
+    Word может дополнительно увеличить высоту строк (atLeast).
+    """
+    distance = twips(1)
+    gap = twips(0.3)
+    line_height = math.ceil(EXECUTOR_FONT_SIZE * 1.35) * 20
+    lines = 0
+    for block in memo_blocks(memo, []):
+        if block.get('footer') and block.get('text'):
+            for line in str(block['text']).split('\n'):
+                # До 1,2 em на символ: резерв учитывает перенос длинных строк.
+                width = len(line) * EXECUTOR_FONT_SIZE * 24
+                lines += max(1, int((width + TEXT_WIDTH - 1) // TEXT_WIDTH))
+    bottom = max(twips(1), distance + lines * line_height + gap)
+    return distance, bottom, line_height
+
+
 def document_xml(memo, addressees):
+    footer_distance, bottom_margin, _ = footer_geometry(memo)
     blocks = memo_blocks(memo, addressees)
     while blocks and (blocks[-1].get('footer') or blocks[-1].get('blank')):
         blocks.pop()
@@ -313,7 +335,7 @@ def document_xml(memo, addressees):
             '<w:pgMar w:top="%d" w:right="%d" w:bottom="%d" w:left="%d" '
             'w:header="0" w:footer="%d" w:gutter="0"/>'
             '</w:sectPr></w:body></w:document>'
-            % (body, twips(1.5), twips(1), twips(1), twips(2.5), twips(0.2)))
+            % (body, twips(1.5), twips(1), bottom_margin, twips(2.5), footer_distance))
 
 
 def footer_xml(memo):
@@ -326,6 +348,7 @@ def footer_xml(memo):
     # инструкции при CHARFORMAT. Размер одного кешированного результата
     # или знака абзаца не защищает от наследования Normal (14 пт).
     size = EXECUTOR_FONT_SIZE * 2
+    _, _, line_height = footer_geometry(memo)
     rpr = ('<w:rPr><w:rFonts w:ascii="{f}" w:hAnsi="{f}" w:eastAsia="{f}" w:cs="{f}"/>'
            '<w:sz w:val="{s}"/><w:szCs w:val="{s}"/></w:rPr>').format(f=FONT, s=size)
 
@@ -350,7 +373,7 @@ def footer_xml(memo):
         # Кавычки и обратные слеши экранируются также для языка полей Word.
         literal = text.replace('\\', '\\\\').replace('"', '\\"')
         paragraphs.append(
-            '<w:p><w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/>'
+            '<w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="%d" w:lineRule="atLeast"/>' % line_height
             + rpr + '</w:pPr>' + marker('begin') + instruction(' IF ')
             + field(' PAGE ') + instruction(' = ') + field(' NUMPAGES ')
             + instruction(' "%s" "" \\* CHARFORMAT ' % literal)

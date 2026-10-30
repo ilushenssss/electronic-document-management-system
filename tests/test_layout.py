@@ -20,7 +20,7 @@ W = '{%s}' % NS['w']
 class LayoutTest(unittest.TestCase):
     def test_executor_font_applies_to_field_instructions_and_results(self):
         from unittest.mock import patch
-        for size in (8, 10):
+        for size in (8, 10, 11, 14):
             with self.subTest(size=size), patch.object(docx, 'EXECUTOR_FONT_SIZE', size):
                 memo = {'executor_name': 'Иванов Иван Иванович', 'executor_phone': '12-34'}
                 footer = ET.fromstring(docx.footer_xml(memo))
@@ -46,7 +46,7 @@ class LayoutTest(unittest.TestCase):
                     ET.fromstring(z.read(part))
                 document = ET.fromstring(z.read('word/document.xml'))
                 margins = document.find('.//w:pgMar', NS)
-                for name, cm in [('top', 1.5), ('left', 2.5), ('bottom', 1), ('right', 1)]:
+                for name, cm in [('top', 1.5), ('left', 2.5), ('right', 1)]:
                     self.assertEqual(margins.get(W + name), str(docx.twips(cm)))
                 body_paras = [p for p in document.findall('.//w:p', NS)
                               if 'Тело' in ''.join(p.itertext())]
@@ -67,6 +67,34 @@ class LayoutTest(unittest.TestCase):
                 self.assertIsNotNone(document.find('.//w:footerReference', NS))
                 settings = ET.fromstring(z.read('word/settings.xml'))
                 self.assertEqual(settings.find('w:updateFields', NS).get(W + 'val'), 'true')
+
+    def test_printable_footer_has_room_for_executor_and_phone(self):
+        from unittest.mock import patch
+        for size in (8, 11, 14):
+            with self.subTest(size=size), patch.object(docx, 'EXECUTOR_FONT_SIZE', size):
+                memo = {'body': 'Текст\n' * 200, 'executor_name': 'Иванов Иван Иванович',
+                        'executor_phone': '12-34'}
+                document = ET.fromstring(docx.document_xml(memo, []))
+                footer = ET.fromstring(docx.footer_xml(memo))
+                margins = document.find('.//w:pgMar', NS)
+                distance = int(margins.get(W + 'footer'))
+                self.assertGreaterEqual(distance, docx.twips(1))
+                paragraphs = footer.findall('w:p', NS)
+                self.assertEqual(len(paragraphs), 2)
+                self.assertIn('Исп. Иванов И.И.', ''.join(paragraphs[0].itertext()))
+                self.assertIn('Тел. 12-34', ''.join(paragraphs[1].itertext()))
+                height = 0
+                for p in paragraphs:
+                    spacing = p.find('w:pPr/w:spacing', NS)
+                    self.assertEqual(spacing.get(W + 'lineRule'), 'atLeast')
+                    line_height = int(spacing.get(W + 'line'))
+                    self.assertGreaterEqual(line_height, size * 20 * 1.3)
+                    height += line_height
+                bottom = int(margins.get(W + 'bottom'))
+                self.assertGreaterEqual(bottom, distance + height + docx.twips(0.3))
+                memo['executor_phone'] = '12-34, доб. 5678; ' * 15 + '\nДополнительный телефон'
+                long_doc = ET.fromstring(docx.document_xml(memo, []))
+                self.assertGreater(int(long_doc.find('.//w:pgMar', NS).get(W + 'bottom')), bottom)
 
     def test_edit_existing_addressee_and_preserve_memo_snapshot(self):
         with tempfile.TemporaryDirectory() as root:
