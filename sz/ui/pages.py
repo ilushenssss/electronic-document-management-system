@@ -350,9 +350,13 @@ class NewMemoPage(Page):
 
 class RegistryPage(Page):
     BODY_PREVIEW_LIMIT = 100  # символов текста до многоточия
+    PAGE_SIZE = 50
 
     def __init__(self, win):
         super().__init__(win)
+        self.page = 0
+        self.page_count = 1
+        self._filter_state = None
         lay = page_layout(self)
         lay.addWidget(hbox(label('Реестр', 'title'), None,
                            button('Новая СЗ', 'primary', lambda: self.win.navigate('new')),
@@ -408,6 +412,10 @@ class RegistryPage(Page):
         self.open_btn = button('Открыть', on_click=self.open_selected)
         self.word_btn = button('Открыть Word', on_click=self.open_word)
         lay.addWidget(hbox(self.open_btn, self.word_btn, None, self.count, stretch_end=False))
+        self.prev_btn = button('← Назад', on_click=lambda: self.change_page(-1))
+        self.next_btn = button('Далее →', on_click=lambda: self.change_page(1))
+        self.page_label = label('', 'muted')
+        lay.addWidget(hbox(self.prev_btn, self.page_label, self.next_btn))
 
     def reload(self):
         s = self.store
@@ -430,14 +438,25 @@ class RegistryPage(Page):
         self.year.blockSignals(False)
 
         q = self.q.text().strip()
-        memos = actions.search_memos(s, q, self.topic.currentData(), self.year.currentData(),
-                                    self.executor_filter.currentData(), self.addressee_filter.currentData())
+        filters = (q, self.topic.currentData(), self.year.currentData(),
+                   self.executor_filter.currentData(), self.addressee_filter.currentData())
+        if filters != self._filter_state:
+            self.page = 0
+            self._filter_state = filters
+        result = actions.search_memos_page(s, *filters, page=self.page, page_size=self.PAGE_SIZE)
+        memos = result['memos']
+        self.page, self.page_count = result['page'], result['page_count']
         addr = {}
-        for a in s.all('SELECT * FROM memo_addressees ORDER BY memo_id, ord'):
-            addr.setdefault(a['memo_id'], []).append(a)
-        total = s.one('SELECT COUNT(*) AS n FROM memos')['n']
+        if memos:
+            ids = [m['id'] for m in memos]
+            placeholders = ','.join('?' for _ in ids)
+            for a in s.all('SELECT * FROM memo_addressees WHERE memo_id IN (%s) '
+                           'ORDER BY memo_id, ord' % placeholders, ids):
+                addr.setdefault(a['memo_id'], []).append(a)
+        total, matched = result['total'], result['matched']
 
         selected = self.selected_id()
+        self.table.clearSelection()
         self.table.setRowCount(len(memos))
         for row, m in enumerate(memos):
             lst = addr.get(m['id'], [])
@@ -468,11 +487,24 @@ class RegistryPage(Page):
         elif not memos:
             self.count.setText('По этим условиям ничего не нашлось.')
         else:
-            self.count.setText('Найдено %d из %d' % (len(memos), total) if filtered else 'Всего %d' % total)
+            first = self.page * self.PAGE_SIZE + 1
+            last = first + len(memos) - 1
+            self.count.setText('%d–%d из %d%s' % (
+                first, last, matched, ' (всего %d)' % total if filtered else ''))
+        self.page_label.setText('Страница %d из %d' % (self.page + 1, self.page_count)
+                                if matched else 'Нет записей')
+        self.prev_btn.setEnabled(self.page > 0)
+        self.next_btn.setEnabled(self.page + 1 < self.page_count)
         self.update_buttons()
+
+    def change_page(self, step):
+        self.timer.stop()
+        self.page = min(max(0, self.page + step), self.page_count - 1)
+        self.reload()
 
     def reset_filters(self):
         self.timer.stop()
+        self.page = 0
         widgets = (self.q, self.topic, self.year, self.executor_filter, self.addressee_filter)
         for w in widgets:
             w.blockSignals(True)

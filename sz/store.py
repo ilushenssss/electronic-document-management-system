@@ -225,6 +225,8 @@ class Store:
         with self._lock():
             self.db = sqlite3.connect(self.db_path, timeout=LOCK_TIMEOUT_S, isolation_level=None)
             self.db.row_factory = sqlite3.Row
+            # SQLite LOWER не приводит кириллицу к нижнему регистру.
+            self.db.create_function('unicode_lower', 1, lambda value: str(value or '').lower())
             # WAL на сетевой папке не работает
             self.db.execute('PRAGMA journal_mode = DELETE')
             self._prepare()
@@ -367,3 +369,4 @@ class Store:
             raise StoreError('Не удалось записать %s: файл открыт в Word или нет прав на запись. '
                              'Закройте документ и повторите.' % path)
         return '/'.join(rel_parts)
+

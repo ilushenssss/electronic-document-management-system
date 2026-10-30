@@ -21,6 +21,52 @@ from test_core import seed  # noqa: E402
 
 @unittest.skipIf(QApplication is None, 'PyQt5 не установлен')
 class WindowTest(unittest.TestCase):
+    def test_registry_page_navigation_and_filter_reset(self):
+        from sz.ui.window import MainWindow
+        from test_paging import fill_registry
+
+        root = tempfile.TemporaryDirectory()
+        self.addCleanup(root.cleanup)
+        store = Store(root.name)
+        store.open()
+        fill_registry(store, 123)
+        store.close()
+        app = QApplication.instance() or QApplication([])
+        win = MainWindow(lambda: root.name)
+        self.addCleanup(win.close)
+        self.assertTrue(win.connect())
+        win.navigate('list')
+        registry = win.pages['list']
+        self.assertEqual(registry.table.rowCount(), 50)
+        self.assertFalse(registry.prev_btn.isEnabled())
+        registry.table.selectRow(0)
+        registry.next_btn.click()
+        self.assertEqual(registry.page, 1)
+        self.assertIsNone(registry.selected_id())
+        self.assertEqual(registry.table.item(0, 0).text(), 'НТЦ-0073-26')
+        registry.next_btn.click()
+        self.assertEqual(registry.table.rowCount(), 23)
+        self.assertFalse(registry.next_btn.isEnabled())
+        registry.q.setText('оборудование')
+        registry.reload()
+        self.assertEqual(registry.page, 0)
+        self.assertEqual(registry.table.rowCount(), 2)
+        self.assertFalse(registry.next_btn.isEnabled())
+        registry.reset_filters()
+        self.assertEqual(registry.page, 0)
+        registry.next_btn.click()
+        registry.table.selectRow(0)
+        registry.open_btn.click()
+        self.assertEqual(win.pages['memo'].reg.text(), 'НТЦ-0073-26')
+        win.navigate('list')
+        self.assertEqual(registry.page, 1)
+        registry.next_btn.click()
+        win.store.write(lambda s: s.run('DELETE FROM memos WHERE number <= 23'))
+        registry.reload()
+        self.assertEqual(registry.page, 1)
+        self.assertEqual(registry.table.rowCount(), 50)
+        app.processEvents()
+
     def test_pages_and_create(self):
         from sz.ui.common import STYLE
         from sz.ui.window import MainWindow

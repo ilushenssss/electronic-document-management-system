@@ -201,8 +201,8 @@ def save_settings(store, org_name, city, prefix, output_dir):
     store.write(save)
 
 
-def search_memos(store, q='', topic_id=None, year=None, executor_name=None, addressee_department=None):
-    sql = 'SELECT * FROM memos WHERE 1=1'
+def _memo_filter(q='', topic_id=None, year=None, executor_name=None, addressee_department=None):
+    sql = ' WHERE 1=1'
     params = []
     if topic_id:
         sql += ' AND topic_id = ?'
@@ -217,14 +217,42 @@ def search_memos(store, q='', topic_id=None, year=None, executor_name=None, addr
         sql += (' AND EXISTS (SELECT 1 FROM memo_addressees a '
                 'WHERE a.memo_id = memos.id AND a.department = ?)')
         params.append(addressee_department)
-    memos = store.all(sql + ' ORDER BY year DESC, number DESC', params)
     if q:
-        # LIKE в SQLite не учитывает регистр кириллицы, поэтому ищем в Python
-        needle = q.lower()
         keys = ('reg_number', 'topic_name', 'addressee_department', 'addressee_name',
                 'executor_name', 'signer_name', 'body', 'attachment')
-        memos = [m for m in memos if needle in ' '.join(str(m.get(k) or '') for k in keys).lower()]
-    return memos
+        text = " || ' ' || ".join("COALESCE(%s, '')" % key for key in keys)
+        sql += ' AND instr(unicode_lower(%s), ?) > 0' % text
+        params.append(q.lower())
+    return sql, params
+
+
+def search_memos(store, q='', topic_id=None, year=None, executor_name=None, addressee_department=None):
+    where, params = _memo_filter(q, topic_id, year, executor_name, addressee_department)
+    return store.all('SELECT * FROM memos' + where + ' ORDER BY year DESC, number DESC', params)
+
+
+def search_memos_page(store, q='', topic_id=None, year=None, executor_name=None,
+                      addressee_department=None, page=0, page_size=50):
+    """Одна страница реестра; фильтрация и подсчёт выполняются до LIMIT.
+
+    Номер страницы начинается с нуля и ограничивается существующими страницами.
+    """
+    page_size = max(1, int(page_size))
+    where, params = _memo_filter(q, topic_id, year, executor_name, addressee_department)
+    # Подсчёт и выборка видят один снимок при одновременной работе пользователей.
+    store.db.execute('SAVEPOINT registry_page')
+    try:
+        total = store.one('SELECT COUNT(*) AS n FROM memos')['n']
+        matched = store.one('SELECT COUNT(*) AS n FROM memos' + where, params)['n']
+        page_count = max(1, (matched + page_size - 1) // page_size)
+        page = min(max(0, int(page)), page_count - 1)
+        memos = store.all('SELECT * FROM memos' + where +
+                          ' ORDER BY year DESC, number DESC LIMIT ? OFFSET ?',
+                          params + [page_size, page * page_size])
+        return {'memos': memos, 'total': total, 'matched': matched,
+                'page': page, 'page_count': page_count}
+    finally:
+        store.db.execute('RELEASE SAVEPOINT registry_page')
 
 
 # Адресатов у записки может быть несколько, поэтому они считаются по memo_addressees
