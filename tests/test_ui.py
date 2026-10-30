@@ -37,14 +37,15 @@ class WindowTest(unittest.TestCase):
         self.assertTrue(win.connect())
         win.navigate('list')
         registry = win.pages['list']
-        self.assertEqual(registry.table.rowCount(), 50)
+        self.assertEqual(registry.table.rowCount(), 25)
         self.assertFalse(registry.prev_btn.isEnabled())
         registry.table.selectRow(0)
         registry.next_btn.click()
         self.assertEqual(registry.page, 1)
         self.assertIsNone(registry.selected_id())
-        self.assertEqual(registry.table.item(0, 0).text(), 'НТЦ-0073-26')
-        registry.next_btn.click()
+        self.assertEqual(registry.table.item(0, 0).text(), 'НТЦ-0098-26')
+        while registry.next_btn.isEnabled():
+            registry.next_btn.click()
         self.assertEqual(registry.table.rowCount(), 23)
         self.assertFalse(registry.next_btn.isEnabled())
         registry.q.setText('оборудование')
@@ -57,14 +58,15 @@ class WindowTest(unittest.TestCase):
         registry.next_btn.click()
         registry.table.selectRow(0)
         registry.open_btn.click()
-        self.assertEqual(win.pages['memo'].reg.text(), 'НТЦ-0073-26')
+        self.assertEqual(win.pages['memo'].reg.text(), 'НТЦ-0098-26')
         win.navigate('list')
         self.assertEqual(registry.page, 1)
-        registry.next_btn.click()
+        while registry.next_btn.isEnabled():
+            registry.next_btn.click()
         win.store.write(lambda s: s.run('DELETE FROM memos WHERE number <= 23'))
         registry.reload()
-        self.assertEqual(registry.page, 1)
-        self.assertEqual(registry.table.rowCount(), 50)
+        self.assertEqual(registry.page, 3)
+        self.assertEqual(registry.table.rowCount(), 25)
         app.processEvents()
 
     def test_pages_and_create(self):
@@ -175,7 +177,7 @@ class WindowTest(unittest.TestCase):
         win.store.write(lambda s: s.run('UPDATE memos SET body = ?', (body,)))
         registry.reload()
         compact = ' '.join(body.split())
-        self.assertEqual(registry.table.item(0, 3).text(), compact[:100].rstrip() + '…')
+        self.assertEqual(registry.table.item(0, 3).text(), compact[:200].rstrip() + '…')
         for col in range(registry.table.columnCount()):
             tooltip = registry.table.item(0, col).toolTip()
             self.assertIn('&lt;важно&gt; &amp; проверка<br>', tooltip)
