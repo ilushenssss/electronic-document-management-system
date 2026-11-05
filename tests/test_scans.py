@@ -106,6 +106,53 @@ class ScanTest(unittest.TestCase):
         self.assertEqual(new.read_bytes(), PDF)
         self.assertFalse(target.exists())
 
+    def test_paper_scan_uses_internal_number_and_can_change_back(self):
+        result = scans.save(self.store, self.mid, '', str(self.source), in_paper=True)
+        path = Path(self.store.abs_path(result['scan_path']))
+        self.assertEqual(path.name, 'НТЦ-0001-26.pdf')
+        self.assertEqual(path.read_bytes(), PDF)
+        self.assertEqual((self.memo()['sed_number'], self.memo()['in_paper']), ('', 1))
+        self.assertEqual(scans.sed_label(self.memo()), 'В бумаге')
+        self.assertEqual(actions.search_memos_page(self.store, q='В БУМАГЕ')['matched'], 1)
+        normal = scans.save(self.store, self.mid, NUMBER, expected=('', result['scan_path'], 1))
+        self.assertEqual(Path(normal['scan_path']).name, '1_441062_1100_СЗ.pdf')
+        self.assertFalse(path.exists())
+        self.assertEqual(self.memo()['in_paper'], 0)
+        paper = scans.save(self.store, self.mid, NUMBER, in_paper=True)
+        self.assertEqual(Path(paper['scan_path']).name, 'НТЦ-0001-26.pdf')
+        self.assertEqual(self.memo()['sed_number'], '')
+
+    def test_missing_sed_filter_excludes_paper_and_registered_memos(self):
+        registered, _ = actions.create_memo(self.store, memo_data(), [1])
+        paper, _ = actions.create_memo(self.store, memo_data(), [1])
+        scans.save(self.store, registered, NUMBER)
+        scans.save(self.store, paper, '', in_paper=True)
+        self.store.write(lambda s: s.run('UPDATE memos SET sed_number = ? WHERE id = ?', ('  ', self.mid)))
+        result = actions.search_memos_page(self.store, missing_sed=True, page=99, page_size=25,
+                                           year=2026, executor_name='Сидоров Сидор Сидорович',
+                                           addressee_department='Отдел кадров')
+        self.assertEqual((result['total'], result['matched'], result['page']), (3, 1, 0))
+        self.assertEqual([m['id'] for m in result['memos']], [self.mid])
+        self.assertEqual([m['id'] for m in actions.search_memos(self.store, missing_sed=True)], [self.mid])
+        self.assertEqual(actions.search_memos_page(self.store, missing_sed=True, q='В бумаге')['matched'], 0)
+
+    def test_paper_marker_without_upload_discovers_manual_internal_pdf(self):
+        result = scans.save(self.store, self.mid, '', in_paper=True)
+        self.assertEqual(result['scan_path'], '')
+        path = Path(self.store.abs_path(scans.target_path(self.store, self.memo(), '', True)))
+        path.write_bytes(PDF)
+        self.assertEqual(scans.document_path(self.store, self.memo()), str(path))
+        with self.assertRaises(StoreError):
+            scans.save(self.store, self.mid, NUMBER, expected=('', ''))
+
+    def test_paper_flag_rolls_back_if_rename_is_blocked(self):
+        old = self.upload()
+        with patch('sz.scans.os.replace', side_effect=PermissionError('открыт')):
+            with self.assertRaises(StoreError):
+                scans.save(self.store, self.mid, '', in_paper=True)
+        self.assertEqual((self.memo()['sed_number'], self.memo()['in_paper']), (NUMBER, 0))
+        self.assertEqual(Path(self.store.abs_path(old['scan_path'])).read_bytes(), PDF)
+
     def test_manually_named_file_is_bound_without_upload(self):
         target = Path(self.store.abs_path(scans.target_path(self.store, self.memo(), NUMBER)))
         target.write_bytes(PDF)
@@ -185,7 +232,8 @@ class ScanTest(unittest.TestCase):
         # Старые рабочие базы не имеют новых колонок.
         schema = db.execute("SELECT sql FROM sqlite_master WHERE name = 'memos'").fetchone()[0]
         schema = re.sub(r",\s*(?:sed_number|scan_path) TEXT NOT NULL DEFAULT ''", '', schema)
-        columns = [r[1] for r in db.execute('PRAGMA table_info(memos)') if r[1] not in ('sed_number', 'scan_path')]
+        schema = re.sub(r",\s*in_paper INTEGER NOT NULL DEFAULT 0", '', schema)
+        columns = [r[1] for r in db.execute('PRAGMA table_info(memos)') if r[1] not in ('sed_number', 'scan_path', 'in_paper')]
         db.execute('ALTER TABLE memos RENAME TO old_memos')
         db.execute(schema)
         names = ','.join(columns)
@@ -196,6 +244,7 @@ class ScanTest(unittest.TestCase):
         self.store.open()
         self.assertEqual(self.memo()['reg_number'], 'НТЦ-0001-26')
         self.assertEqual((self.memo()['sed_number'], self.memo()['scan_path']), ('', ''))
+        self.assertEqual(self.memo()['in_paper'], 0)
         self.upload()
 
 

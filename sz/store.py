@@ -88,6 +88,7 @@ CREATE TABLE IF NOT EXISTS memo_addressees (
 
 # Колонки, добавленные после первой версии: (таблица, колонка, определение)
 ADDED_COLUMNS = [
+    ('memos', 'in_paper', 'INTEGER NOT NULL DEFAULT 0'),
     ('memos', 'sed_number', "TEXT NOT NULL DEFAULT ''"),
     ('memos', 'scan_path', "TEXT NOT NULL DEFAULT ''"),
     ('memos', 'reg_number', 'TEXT'),

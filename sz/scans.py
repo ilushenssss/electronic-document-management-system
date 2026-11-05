@@ -63,6 +63,14 @@ def pdf_name(number):
     return clean_number(number).replace('/', '_') + '.pdf'
 
 
+def sed_label(memo):
+    return 'В бумаге' if memo.get('in_paper') else memo.get('sed_number', '')
+
+
+def scan_name(memo, number, in_paper=False):
+    return docx.file_base_name(memo) + '.pdf' if in_paper else pdf_name(number)
+
+
 def memo_folder(store, memo):
     if memo.get('file_path'):
         return split_path(memo['file_path'])[:-1]
@@ -71,8 +79,8 @@ def memo_folder(store, memo):
     return split_path(store.output_dir) + [str(memo['year']), docx.file_base_name(memo)]
 
 
-def target_path(store, memo, number):
-    return '/'.join(memo_folder(store, memo) + [pdf_name(number)])
+def target_path(store, memo, number, in_paper=False):
+    return '/'.join(memo_folder(store, memo) + [scan_name(memo, number, in_paper)])
 
 
 def document_path(store, memo):
@@ -81,8 +89,8 @@ def document_path(store, memo):
         return None
     if memo.get('scan_path'):
         return store.document_path(memo['scan_path'])
-    if memo.get('sed_number'):
-        return store.document_path(target_path(store, memo, memo['sed_number']))
+    if memo.get('sed_number') or memo.get('in_paper'):
+        return store.document_path(target_path(store, memo, memo['sed_number'], bool(memo.get('in_paper'))))
     return None
 
 
@@ -94,13 +102,14 @@ def check_pdf(path):
             raise StoreError('Файл не содержит заголовка PDF. Выберите скан в формате PDF.')
 
 
-def save(store, memo_id, number, source_path=None, expected=None, overwrite=False):
+def save(store, memo_id, number, source_path=None, expected=None, overwrite=False, in_paper=False):
     """Сохраняет номер отдельно или вместе с копией PDF; исходник загрузки не удаляет.
 
     Файл готовится до записи. При ошибке БД/замены восстанавливается прежний
     документ. Смена номера переименовывает уже привязанный скан.
     """
-    number = clean_number(number)
+    in_paper = bool(in_paper)
+    number = '' if in_paper else clean_number(number)
     if source_path is not None:
         source_path = os.path.abspath(source_path)
         check_pdf(source_path)
@@ -110,11 +119,15 @@ def save(store, memo_id, number, source_path=None, expected=None, overwrite=Fals
         memo = store.one('SELECT * FROM memos WHERE id = ?', (memo_id,))
         if not memo:
             raise StoreError('СЗ удалена. Скан не загружен.')
-        current = (memo['sed_number'], memo['scan_path'])
-        if expected is not None and tuple(expected) != current:
+        current = (memo['sed_number'], memo['scan_path'], int(bool(memo.get('in_paper'))))
+        if expected is not None:
+            expected = tuple(expected)
+            if len(expected) == 2:
+                expected += (0,)
+        if expected is not None and expected != current:
             raise StoreError('Номер СЭД или скан уже изменён другим пользователем. Закройте окно '
                              'ввода и перечитайте карточку СЗ.')
-        rel = target_path(store, memo, number)
+        rel = target_path(store, memo, number, in_paper)
         destination = store.abs_path(rel)
         old_path = document_path(store, memo)
         source = source_path or old_path
@@ -146,7 +159,8 @@ def save(store, memo_id, number, source_path=None, expected=None, overwrite=Fals
             scan_rel = rel if source or os.path.isfile(destination) else ''
             store.db.execute('BEGIN IMMEDIATE')
             transaction = True
-            store.run('UPDATE memos SET sed_number = ?, scan_path = ? WHERE id = ?', (number, scan_rel, memo_id))
+            store.run('UPDATE memos SET sed_number = ?, scan_path = ?, in_paper = ? WHERE id = ?',
+                      (number, scan_rel, int(in_paper), memo_id))
             if source and not same_file:
                 os.replace(temp_path if source_path else source, destination)
                 installed = True
@@ -177,4 +191,4 @@ def save(store, memo_id, number, source_path=None, expected=None, overwrite=Fals
             if temp_path and os.path.exists(temp_path):
                 os.unlink(temp_path)
         store._version = store._data_version()
-        return {'sed_number': number, 'scan_path': scan_rel}
+        return {'sed_number': number, 'scan_path': scan_rel, 'in_paper': int(in_paper)}

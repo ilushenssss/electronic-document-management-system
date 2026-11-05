@@ -9,7 +9,7 @@ from PyQt5.QtWidgets import (QAbstractItemView, QComboBox, QDateEdit, QFormLayou
                              QGridLayout, QHBoxLayout, QHeaderView, QLineEdit, QListWidget,
                              QListWidgetItem, QPlainTextEdit, QScrollArea, QSplitter,
                              QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
-                             QDialog, QTextBrowser, QFrame, QFileDialog)
+                             QDialog, QTextBrowser, QFrame, QFileDialog, QCheckBox)
 
 from .. import actions, docx, scans
 from ..store import DEFAULT_NUMBER_PREFIX, DEFAULT_OUTPUT_DIR
@@ -535,6 +535,8 @@ class RegistryPage(Page):
         people_bar.addWidget(self.executor_filter, 1)
         people_bar.addWidget(label('Адресат'))
         people_bar.addWidget(self.addressee_filter, 1)
+        self.missing_sed = QCheckBox('Без номера СЭД')
+        people_bar.addWidget(self.missing_sed)
         lay.addLayout(people_bar)
 
         # Поиск по мере ввода, с небольшой задержкой
@@ -547,6 +549,7 @@ class RegistryPage(Page):
         self.year.currentIndexChanged.connect(lambda: self.reload())
         self.executor_filter.currentIndexChanged.connect(lambda: self.reload())
         self.addressee_filter.currentIndexChanged.connect(lambda: self.reload())
+        self.missing_sed.toggled.connect(lambda: self.reload())
 
         self.table = read_only_table(['Номер', 'Номер СЭД', 'Дата', 'Тематика', 'Текст СЗ', 'Кому', 'Исполнитель'])
         self.table.setShowGrid(True)
@@ -596,11 +599,13 @@ class RegistryPage(Page):
 
         q = self.q.text().strip()
         filters = (q, self.topic.currentData(), self.year.currentData(),
-                   self.executor_filter.currentData(), self.addressee_filter.currentData())
+                   self.executor_filter.currentData(), self.addressee_filter.currentData(),
+                   self.missing_sed.isChecked())
         if filters != self._filter_state:
             self.page = 0
             self._filter_state = filters
-        result = actions.search_memos_page(s, *filters, page=self.page, page_size=self.PAGE_SIZE)
+        result = actions.search_memos_page(s, *filters[:5], page=self.page, page_size=self.PAGE_SIZE,
+                                          missing_sed=filters[5])
         memos = result['memos']
         self.page, self.page_count = result['page'], result['page_count']
         addr = {}
@@ -623,7 +628,7 @@ class RegistryPage(Page):
             compact = ' '.join(body.split())
             preview = (compact[:self.BODY_PREVIEW_LIMIT].rstrip() + '…'
                        if len(compact) > self.BODY_PREVIEW_LIMIT else compact)
-            values = [m['reg_number'], m['sed_number'], docx.format_date(m['memo_date']), m['topic_name'],
+            values = [m['reg_number'], scans.sed_label(m), docx.format_date(m['memo_date']), m['topic_name'],
                       preview, to, m['executor_name']]
             # Подсказка доступна над любой ячейкой записки; теги из текста
             # показываем буквально, исходные переносы сохраняем.
@@ -642,7 +647,8 @@ class RegistryPage(Page):
         self.table.resizeRowsToContents()
 
         filtered = bool(q or self.topic.currentData() or self.year.currentData()
-                        or self.executor_filter.currentData() or self.addressee_filter.currentData())
+                        or self.executor_filter.currentData() or self.addressee_filter.currentData()
+                        or self.missing_sed.isChecked())
         self.reset.setVisible(filtered)
         if not total:
             self.count.setText('Здесь появятся созданные служебные записки.')
@@ -667,7 +673,7 @@ class RegistryPage(Page):
     def reset_filters(self):
         self.timer.stop()
         self.page = 0
-        widgets = (self.q, self.topic, self.year, self.executor_filter, self.addressee_filter)
+        widgets = (self.q, self.topic, self.year, self.executor_filter, self.addressee_filter, self.missing_sed)
         for w in widgets:
             w.blockSignals(True)
         self.q.clear()
@@ -675,6 +681,7 @@ class RegistryPage(Page):
         self.year.setCurrentIndex(0)
         self.executor_filter.setCurrentIndex(0)
         self.addressee_filter.setCurrentIndex(0)
+        self.missing_sed.setChecked(False)
         for w in widgets:
             w.blockSignals(False)
         self.reload()
@@ -756,8 +763,9 @@ class PdfDropArea(QFrame):
 
 
 class SedNumberDialog(QDialog):
-    def __init__(self, parent, initial=''):
+    def __init__(self, parent, initial='', memo=None, in_paper=False):
         super().__init__(parent)
+        self.memo = memo or {}
         self.setWindowTitle('Номер СЭД для скана PDF')
         lay = QVBoxLayout(self)
         lay.addWidget(label('Введите номер из другой системы', 'panelTitle'))
@@ -766,6 +774,9 @@ class SedNumberDialog(QDialog):
         self.number.setAccessibleName('Номер СЭД')
         self.number.setPlaceholderText('1/441062/1100/СЗ')
         lay.addWidget(self.number)
+        self.paper = QCheckBox('В бумаге')
+        self.paper.setChecked(in_paper)
+        lay.addWidget(self.paper)
         self.filename = label('', 'hint', wrap=True)
         lay.addWidget(self.filename)
         self.error = label('', 'warn', wrap=True)
@@ -774,19 +785,22 @@ class SedNumberDialog(QDialog):
         lay.addWidget(hbox(button('Сохранить PDF', 'primary', self.validate),
                            button('Отмена', on_click=self.reject)))
         self.number.textChanged.connect(self.update_name)
+        self.paper.toggled.connect(self.update_name)
         self.number.returnPressed.connect(self.validate)
         self.update_name()
         self.resize(480, 200)
 
     def update_name(self):
+        self.number.setEnabled(not self.paper.isChecked())
         try:
-            self.filename.setText('Имя файла: ' + scans.pdf_name(self.number.text()))
+            self.filename.setText('Имя файла: ' + scans.scan_name(self.memo, self.number.text(), self.paper.isChecked()))
         except Exception:
             self.filename.setText('Пример: 1/441062/1100/СЗ → 1_441062_1100_СЗ.pdf')
 
     def validate(self):
         try:
-            self.value = scans.clean_number(self.number.text())
+            self.in_paper = self.paper.isChecked()
+            self.value = '' if self.in_paper else scans.clean_number(self.number.text())
         except Exception as e:
             self.error.setText(str(e))
             self.error.show()
@@ -824,6 +838,9 @@ class MemoPage(Page):
         self.sed_number.setAccessibleName('Номер СЭД')
         self.sed_number.textEdited.connect(self.sed_edited)
         scan_lay.addWidget(self.sed_number)
+        self.paper = QCheckBox('В бумаге')
+        self.paper.toggled.connect(self.paper_toggled)
+        scan_lay.addWidget(self.paper)
         self.save_sed_btn = button('Сохранить номер СЭД', on_click=self.save_sed_number)
         scan_lay.addWidget(self.save_sed_btn)
         scan_lay.addWidget(label('Номер можно сохранить без загрузки PDF. При изменении номера '
@@ -883,6 +900,7 @@ class MemoPage(Page):
         self.drop_area.setEnabled(bool(m))
         self.save_sed_btn.setEnabled(bool(m))
         self.sed_number.setEnabled(bool(m))
+        self.paper.setEnabled(bool(m))
         self.open_scan_btn.setEnabled(False)
         for b in (self.word_btn, self.folder_btn, self.edit_btn, self.delete_btn):
             b.setEnabled(bool(m))
@@ -892,6 +910,10 @@ class MemoPage(Page):
             self.sheet.clear()
             return
         self.sed_number.setText(m['sed_number'])
+        self.paper.blockSignals(True)
+        self.paper.setChecked(bool(m['in_paper']))
+        self.paper.blockSignals(False)
+        self.sed_number.setEnabled(not self.paper.isChecked())
         self.sed_dirty = False
         scan = scans.document_path(s, m)
         self.open_scan_btn.setEnabled(bool(scan))
@@ -934,9 +956,14 @@ class MemoPage(Page):
     def sed_edited(self):
         self.sed_dirty = True
 
+    def paper_toggled(self):
+        self.sed_number.setEnabled(not self.paper.isChecked())
+        self.sed_dirty = True
+
     def has_unsaved_changes(self):
         return bool(self.memo and self.sed_dirty and
-                    self.sed_number.text().strip().upper() != self.memo['sed_number'])
+                    (self.paper.isChecked() != bool(self.memo['in_paper']) or
+                     (not self.paper.isChecked() and self.sed_number.text().strip().upper() != self.memo['sed_number'])))
 
     def on_external_change(self):
         if not self.sed_dirty:
@@ -953,11 +980,12 @@ class MemoPage(Page):
             return
         was_dirty = self.sed_dirty
         self.sed_dirty = True  # обновления коллег не подменяют снимок во время диалога
-        dialog = SedNumberDialog(self, self.sed_number.text())
+        dialog = SedNumberDialog(self, self.sed_number.text(), self.memo, self.paper.isChecked())
         if dialog.exec_() != QDialog.Accepted:
             self.sed_dirty = was_dirty
             return
         self.sed_number.setText(dialog.value)
+        self.paper.setChecked(dialog.in_paper)
         self.sed_dirty = True
         self.save_registration(source)
 
@@ -981,12 +1009,13 @@ class MemoPage(Page):
     def save_registration(self, source=None):
         if not self.memo:
             return
-        expected = (self.memo['sed_number'], self.memo['scan_path'])
+        expected = (self.memo['sed_number'], self.memo['scan_path'], self.memo['in_paper'])
 
         def save(overwrite=False):
             try:
                 return scans.save(self.store, self.memo_id, self.sed_number.text(),
-                                  source_path=source, expected=expected, overwrite=overwrite)
+                                  source_path=source, expected=expected, overwrite=overwrite,
+                                  in_paper=self.paper.isChecked())
             except scans.ScanExists as e:
                 return {'exists': str(e)}
 
@@ -1000,10 +1029,11 @@ class MemoPage(Page):
             if not ok:
                 return
         self.reload()
-        self.win.flash('PDF сохранён в папку СЗ, номер СЭД записан в реестр.' if source else
-                       'Номер СЭД сохранён.' + (' Скан привязан.' if result['scan_path'] else
+        status = 'Отметка «В бумаге» сохранена.' if result['in_paper'] else 'Номер СЭД сохранён.'
+        self.win.flash(status + (' PDF сохранён в папку СЗ.' if source else
+                       ' Скан привязан.' if result['scan_path'] else
                        ' PDF можно загрузить позже или поместить в папку СЗ под именем %s.'
-                       % scans.pdf_name(result['sed_number'])))
+                       % scans.scan_name(self.memo, result['sed_number'], bool(result['in_paper']))))
 
     def open_scan(self):
         scan = scans.document_path(self.store, self.memo)

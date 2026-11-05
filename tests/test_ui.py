@@ -71,6 +71,7 @@ class WindowTest(unittest.TestCase):
         with patch('sz.ui.pages.SedNumberDialog') as dialog:
             dialog.return_value.exec_.return_value = QDialog.Accepted
             dialog.return_value.value = '1/441062/1100/СЗ'
+            dialog.return_value.in_paper = False
             event = QDropEvent(QPointF(10, 10), Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier)
             page.dropEvent(event)
         self.assertTrue(page.open_scan_btn.isEnabled())
@@ -111,6 +112,7 @@ class WindowTest(unittest.TestCase):
                 patch('sz.ui.pages.scans.check_pdf', wraps=scans.check_pdf) as checked:
             dialog.return_value.exec_.return_value = QDialog.Accepted
             dialog.return_value.value = '1/441062/1103/СЗ'
+            dialog.return_value.in_paper = False
             event = QDropEvent(QPointF(10, 10), Qt.CopyAction, virtual, Qt.LeftButton, Qt.NoModifier)
             page.dropEvent(event)
             temporary = [Path(call.args[0]) for call in checked.call_args_list
@@ -119,6 +121,28 @@ class WindowTest(unittest.TestCase):
         self.assertTrue(all(not path.exists() for path in temporary))
         self.assertEqual(page.sed_number.text(), '1/441062/1103/СЗ')
         self.assertTrue(page.open_scan_btn.isEnabled())
+        from sz.ui.pages import SedNumberDialog
+        number_dialog = SedNumberDialog(page, 'не номер', page.memo)
+        number_dialog.paper.setChecked(True)
+        self.assertFalse(number_dialog.number.isEnabled())
+        self.assertIn('НТЦ-0001-26.pdf', number_dialog.filename.text())
+        number_dialog.validate()
+        self.assertEqual(number_dialog.result(), QDialog.Accepted)
+        self.assertTrue(number_dialog.in_paper)
+        self.assertEqual(number_dialog.value, '')
+        page.paper.setChecked(True)
+        page.save_sed_btn.click()
+        self.assertFalse(page.sed_number.isEnabled())
+        self.assertTrue(scans.document_path(win.store, page.memo).endswith('НТЦ-0001-26.pdf'))
+        win.navigate('list')
+        registry.reset_filters()
+        self.assertEqual(registry.table.item(0, 1).text(), 'В бумаге')
+        registry.missing_sed.setChecked(True)
+        self.assertEqual(registry.page, 0)
+        self.assertEqual(registry.table.rowCount(), 0)
+        registry.reset_filters()
+        self.assertFalse(registry.missing_sed.isChecked())
+        self.assertEqual(registry.table.rowCount(), 1)
         app.processEvents()
 
     def test_edit_memo_locked_word_retry_and_conflict(self):

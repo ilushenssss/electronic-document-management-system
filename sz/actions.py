@@ -308,7 +308,7 @@ def save_settings(store, org_name, city, prefix, output_dir):
     store.write(save)
 
 
-def _memo_filter(q='', topic_id=None, year=None, executor_name=None, addressee_department=None):
+def _memo_filter(q='', topic_id=None, year=None, executor_name=None, addressee_department=None, missing_sed=False):
     sql = ' WHERE 1=1'
     params = []
     if topic_id:
@@ -324,28 +324,31 @@ def _memo_filter(q='', topic_id=None, year=None, executor_name=None, addressee_d
         sql += (' AND EXISTS (SELECT 1 FROM memo_addressees a '
                 'WHERE a.memo_id = memos.id AND a.department = ?)')
         params.append(addressee_department)
+    if missing_sed:
+        sql += " AND trim(COALESCE(sed_number, '')) = '' AND COALESCE(in_paper, 0) = 0"
     if q:
         keys = ('reg_number', 'sed_number', 'topic_name', 'addressee_department', 'addressee_name',
                 'executor_name', 'signer_name', 'body', 'attachment')
         text = " || ' ' || ".join("COALESCE(%s, '')" % key for key in keys)
+        text += " || ' ' || CASE WHEN in_paper = 1 THEN 'В бумаге' ELSE '' END"
         sql += ' AND instr(unicode_lower(%s), ?) > 0' % text
         params.append(q.lower())
     return sql, params
 
 
-def search_memos(store, q='', topic_id=None, year=None, executor_name=None, addressee_department=None):
-    where, params = _memo_filter(q, topic_id, year, executor_name, addressee_department)
+def search_memos(store, q='', topic_id=None, year=None, executor_name=None, addressee_department=None, missing_sed=False):
+    where, params = _memo_filter(q, topic_id, year, executor_name, addressee_department, missing_sed)
     return store.all('SELECT * FROM memos' + where + ' ORDER BY year DESC, number DESC', params)
 
 
 def search_memos_page(store, q='', topic_id=None, year=None, executor_name=None,
-                      addressee_department=None, page=0, page_size=50):
+                      addressee_department=None, page=0, page_size=50, missing_sed=False):
     """Одна страница реестра; фильтрация и подсчёт выполняются до LIMIT.
 
     Номер страницы начинается с нуля и ограничивается существующими страницами.
     """
     page_size = max(1, int(page_size))
-    where, params = _memo_filter(q, topic_id, year, executor_name, addressee_department)
+    where, params = _memo_filter(q, topic_id, year, executor_name, addressee_department, missing_sed)
     # Подсчёт и выборка видят один снимок при одновременной работе пользователей.
     store.db.execute('SAVEPOINT registry_page')
     try:
