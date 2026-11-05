@@ -24,8 +24,8 @@ class WindowTest(unittest.TestCase):
     def test_pdf_drop_number_dialog_and_independent_number_edit(self):
         from pathlib import Path
         from unittest.mock import patch
-        from PyQt5.QtCore import QMimeData, QUrl, QPointF
-        from PyQt5.QtGui import QDropEvent
+        from PyQt5.QtCore import QMimeData, QUrl, QPointF, QPoint
+        from PyQt5.QtGui import QDropEvent, QDragEnterEvent, QDragMoveEvent
         from PyQt5.QtWidgets import QDialog
         from sz import actions, scans
         from sz.ui.pages import PdfDropArea
@@ -55,11 +55,24 @@ class WindowTest(unittest.TestCase):
         mime = QMimeData()
         mime.setUrls([QUrl.fromLocalFile(str(source))])
         self.assertEqual(PdfDropArea.local_pdf(mime), str(source))
+        for target in (page.drop_area, page):
+            enter = QDragEnterEvent(QPoint(10, 10), Qt.CopyAction | Qt.MoveAction,
+                                    mime, Qt.LeftButton, Qt.NoModifier)
+            target.dragEnterEvent(enter)
+            self.assertTrue(enter.isAccepted())
+            move = QDragMoveEvent(QPoint(10, 10), Qt.CopyAction | Qt.MoveAction,
+                                  mime, Qt.LeftButton, Qt.NoModifier)
+            target.dragMoveEvent(move)
+            self.assertTrue(move.isAccepted())
+            self.assertEqual(move.dropAction(), Qt.CopyAction)
+        self.assertFalse(page.sed_number.acceptDrops())
+        self.assertFalse(page.sheet.acceptDrops())
+        self.assertFalse(page.sheet.viewport().acceptDrops())
         with patch('sz.ui.pages.SedNumberDialog') as dialog:
             dialog.return_value.exec_.return_value = QDialog.Accepted
             dialog.return_value.value = '1/441062/1100/СЗ'
             event = QDropEvent(QPointF(10, 10), Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier)
-            page.drop_area.dropEvent(event)
+            page.dropEvent(event)
         self.assertTrue(page.open_scan_btn.isEnabled())
         self.assertEqual(page.sed_number.text(), '1/441062/1100/СЗ')
         self.assertTrue(source.exists())
@@ -87,6 +100,25 @@ class WindowTest(unittest.TestCase):
         self.assertIsNone(PdfDropArea.local_pdf(mime))
         mime.setUrls([QUrl('https://example.com/scan.pdf')])
         self.assertIsNone(PdfDropArea.local_pdf(mime))
+        # Outlook передаёт FileContents без пути на диске. Временный файл
+        # должен дожить до сохранения, затем удалиться.
+        from test_scans import FakeOutlookMime
+        win.navigate('memo', memo_id)
+        virtual = QMimeData()
+        for fmt, content in FakeOutlookMime().formats.items():
+            virtual.setData(fmt, content)
+        with patch('sz.ui.pages.SedNumberDialog') as dialog, \
+                patch('sz.ui.pages.scans.check_pdf', wraps=scans.check_pdf) as checked:
+            dialog.return_value.exec_.return_value = QDialog.Accepted
+            dialog.return_value.value = '1/441062/1103/СЗ'
+            event = QDropEvent(QPointF(10, 10), Qt.CopyAction, virtual, Qt.LeftButton, Qt.NoModifier)
+            page.dropEvent(event)
+            temporary = [Path(call.args[0]) for call in checked.call_args_list
+                         if Path(call.args[0]).name == 'attachment.pdf']
+        self.assertTrue(temporary)
+        self.assertTrue(all(not path.exists() for path in temporary))
+        self.assertEqual(page.sed_number.text(), '1/441062/1103/СЗ')
+        self.assertTrue(page.open_scan_btn.isEnabled())
         app.processEvents()
 
     def test_edit_memo_locked_word_retry_and_conflict(self):

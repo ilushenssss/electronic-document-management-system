@@ -2,6 +2,7 @@
 import datetime
 import json
 import os
+import tempfile
 
 from PyQt5.QtCore import QDate, Qt, QTimer, pyqtSignal
 from PyQt5.QtWidgets import (QAbstractItemView, QComboBox, QDateEdit, QFormLayout,
@@ -702,6 +703,8 @@ class RegistryPage(Page):
 
 class PdfDropArea(QFrame):
     file_dropped = pyqtSignal(str)
+    virtual_dropped = pyqtSignal(object)
+    rejected = pyqtSignal(str)
     choose_requested = pyqtSignal()
 
     def __init__(self):
@@ -710,7 +713,7 @@ class PdfDropArea(QFrame):
         self.setAcceptDrops(True)
         self.setAccessibleName('Загрузка скана PDF для текущей СЗ')
         lay = QVBoxLayout(self)
-        lay.addWidget(label('Перетащите сюда один скан PDF', 'panelTitle', wrap=True))
+        lay.addWidget(label('Перетащите сюда один PDF из Проводника или Outlook', 'panelTitle', wrap=True))
         lay.addWidget(label('После выбора файла укажите номер СЭД. Исходный файл останется на месте.', 'hint', wrap=True))
         lay.addWidget(button('Выбрать PDF', on_click=self.choose_requested.emit))
 
@@ -724,11 +727,14 @@ class PdfDropArea(QFrame):
         return None
 
     def dragEnterEvent(self, event):
-        if self.isEnabled() and self.local_pdf(event.mimeData()):
+        if self.isEnabled() and (self.local_pdf(event.mimeData()) or scans.outlook_pdf_name(event.mimeData())):
             event.setDropAction(Qt.CopyAction)
             event.accept()
         else:
             event.ignore()
+
+    def dragMoveEvent(self, event):
+        self.dragEnterEvent(event)
 
     def dropEvent(self, event):
         path = self.local_pdf(event.mimeData())
@@ -736,6 +742,15 @@ class PdfDropArea(QFrame):
             event.setDropAction(Qt.CopyAction)
             event.accept()
             self.file_dropped.emit(path)
+        elif self.isEnabled() and scans.outlook_pdf_name(event.mimeData()):
+            event.setDropAction(Qt.CopyAction)
+            event.accept()
+            try:
+                data = scans.outlook_pdf_bytes(event.mimeData())
+            except Exception as e:
+                self.rejected.emit(str(e))
+                return
+            self.virtual_dropped.emit(data)
         else:
             event.ignore()
 
@@ -783,6 +798,7 @@ class SedNumberDialog(QDialog):
 class MemoPage(Page):
     def __init__(self, win):
         super().__init__(win)
+        self.setAcceptDrops(True)
         self.memo_id = None
         self.memo = None
         self.sed_dirty = False
@@ -802,6 +818,7 @@ class MemoPage(Page):
         scan_box, scan_lay = panel()
         scan_lay.addWidget(field_label('Номер СЭД'))
         self.sed_number = QLineEdit()
+        self.sed_number.setAcceptDrops(False)  # PDF не должен вставляться в поле как текст
         self.sed_number.setMaxLength(120)
         self.sed_number.setPlaceholderText('1/441062/1100/СЗ')
         self.sed_number.setAccessibleName('Номер СЭД')
@@ -818,6 +835,8 @@ class MemoPage(Page):
         lay.addWidget(scan_box)
         self.drop_area = PdfDropArea()
         self.drop_area.file_dropped.connect(self.upload_scan)
+        self.drop_area.virtual_dropped.connect(self.upload_virtual_scan)
+        self.drop_area.rejected.connect(lambda message: self.win.flash(message, 'error'))
         self.drop_area.choose_requested.connect(self.choose_scan)
         lay.addWidget(self.drop_area)
 
@@ -830,6 +849,8 @@ class MemoPage(Page):
         lay.addStretch(1)
 
         self.sheet = SheetView()
+        self.sheet.setAcceptDrops(False)
+        self.sheet.viewport().setAcceptDrops(False)
         splitter = QSplitter(Qt.Horizontal)
         splitter.addWidget(scrolled(side))
         splitter.addWidget(sheet_frame(self.sheet))
@@ -840,6 +861,15 @@ class MemoPage(Page):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(splitter)
+
+    def dragEnterEvent(self, event):
+        self.drop_area.dragEnterEvent(event)
+
+    def dragMoveEvent(self, event):
+        self.drop_area.dragMoveEvent(event)
+
+    def dropEvent(self, event):
+        self.drop_area.dropEvent(event)
 
     def show_memo(self, memo_id):
         self.memo_id = memo_id
@@ -930,6 +960,20 @@ class MemoPage(Page):
         self.sed_number.setText(dialog.value)
         self.sed_dirty = True
         self.save_registration(source)
+
+    def upload_virtual_scan(self, data):
+        def upload():
+            # Вложение не имеет постоянного пути. Временный PDF живёт до окончания
+            # диалога и сохранения, затем удаляется и при отмене, и при ошибке.
+            with tempfile.TemporaryDirectory(prefix='sz-outlook-') as directory:
+                source = os.path.join(directory, 'attachment.pdf')
+                with open(source, 'wb') as file:
+                    file.write(data)
+                self.upload_scan(source)
+        try:
+            upload()
+        except Exception as e:
+            self.win.report(e)
 
     def save_sed_number(self):
         self.save_registration()

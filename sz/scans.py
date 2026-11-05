@@ -2,6 +2,7 @@
 import os
 import re
 import shutil
+import struct
 import tempfile
 import time
 import uuid
@@ -12,6 +13,43 @@ from .store import StoreError, split_path
 
 class ScanExists(StoreError):
     pass
+
+
+def outlook_pdf_name(mime):
+    """Имя единственного виртуального PDF из Windows FILEGROUPDESCRIPTOR.
+
+    Содержимое вложения на стадии dragEnter не запрашиваем: Outlook может
+    получать его из почты только при отпускании мыши.
+    """
+    for descriptor, encoding, filename_size in [('FileGroupDescriptorW', 'utf-16-le', 520),
+                                                 ('FileGroupDescriptor', 'cp1251', 260)]:
+        fmt = 'application/x-qt-windows-mime;value="%s"' % descriptor
+        if not mime.hasFormat(fmt):
+            continue
+        data = bytes(mime.data(fmt))
+        # cItems (4 байта), FILEDESCRIPTOR: имя начинается со смещения 72.
+        if len(data) < 76 + filename_size or struct.unpack_from('<I', data)[0] != 1:
+            return None
+        name = data[76:76 + filename_size].decode(encoding, errors='replace').split('\0', 1)[0]
+        if name.lower().endswith('.pdf'):
+            return name
+    return None
+
+
+def outlook_pdf_bytes(mime):
+    if not outlook_pdf_name(mime):
+        raise StoreError('Перетащите одно вложение PDF из Outlook.')
+    formats = ['application/x-qt-windows-mime;value="FileContents";index=0',
+               'application/x-qt-windows-mime;value="FileContents"']
+    for fmt in formats:
+        if mime.hasFormat(fmt):
+            data = bytes(mime.data(fmt))
+            if data:
+                if b'%PDF-' not in data[:1024]:
+                    raise StoreError('Вложение Outlook не содержит заголовка PDF.')
+                return data
+    raise StoreError('Outlook не передал содержимое PDF. Сохраните вложение на диск '
+                     'и используйте «Выбрать PDF» или перетащите файл из Проводника.')
 
 
 def clean_number(value):

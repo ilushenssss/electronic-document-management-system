@@ -2,6 +2,7 @@
 from pathlib import Path
 import sqlite3
 import re
+import struct
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -13,6 +14,46 @@ from test_core import seed, memo_data
 NUMBER = '1/441062/1100/СЗ'
 NEXT = '1/441062/1101/СЗ'
 PDF = b'%PDF-1.4\n% scanned document\n%%EOF\n'
+
+
+DESCRIPTOR = 'application/x-qt-windows-mime;value="FileGroupDescriptorW"'
+CONTENTS = 'application/x-qt-windows-mime;value="FileContents";index=0'
+
+
+class FakeOutlookMime:
+    def __init__(self, name='Скан.pdf', content=PDF):
+        descriptor = bytearray(596)
+        struct.pack_into('<I', descriptor, 0, 1)
+        encoded = name.encode('utf-16-le')
+        descriptor[76:76 + len(encoded)] = encoded
+        self.formats = {DESCRIPTOR: bytes(descriptor), CONTENTS: content}
+        self.reads = []
+
+    def hasFormat(self, fmt):
+        return fmt in self.formats
+
+    def data(self, fmt):
+        self.reads.append(fmt)
+        return self.formats.get(fmt, b'')
+
+
+class OutlookMimeTest(unittest.TestCase):
+    def test_descriptor_does_not_load_attachment_until_drop(self):
+        mime = FakeOutlookMime()
+        self.assertEqual(scans.outlook_pdf_name(mime), 'Скан.pdf')
+        self.assertNotIn(CONTENTS, mime.reads)
+        self.assertEqual(scans.outlook_pdf_bytes(mime), PDF)
+        self.assertIn(CONTENTS, mime.reads)
+
+    def test_rejects_multiple_non_pdf_and_missing_or_invalid_contents(self):
+        for descriptor in (b'', struct.pack('<I', 2) + bytes(592)):
+            mime = FakeOutlookMime()
+            mime.formats[DESCRIPTOR] = descriptor
+            self.assertIsNone(scans.outlook_pdf_name(mime))
+        self.assertIsNone(scans.outlook_pdf_name(FakeOutlookMime('Письмо.msg')))
+        for contents in (b'', b'not a PDF'):
+            with self.subTest(contents=contents), self.assertRaises(StoreError):
+                scans.outlook_pdf_bytes(FakeOutlookMime(content=contents))
 
 
 class ScanTest(unittest.TestCase):
