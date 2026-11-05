@@ -1,18 +1,19 @@
 """Страницы: новая СЗ, реестр, просмотр СЗ, статистика, справочники."""
 import datetime
 import json
+import os
 
-from PyQt5.QtCore import QDate, Qt, QTimer
+from PyQt5.QtCore import QDate, Qt, QTimer, pyqtSignal
 from PyQt5.QtWidgets import (QAbstractItemView, QComboBox, QDateEdit, QFormLayout,
                              QGridLayout, QHBoxLayout, QHeaderView, QLineEdit, QListWidget,
                              QListWidgetItem, QPlainTextEdit, QScrollArea, QSplitter,
                              QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
-                             QDialog, QTextBrowser)
+                             QDialog, QTextBrowser, QFrame, QFileDialog)
 
-from .. import actions, docx
+from .. import actions, docx, scans
 from ..store import DEFAULT_NUMBER_PREFIX, DEFAULT_OUTPUT_DIR
 from .common import (BarList, ColumnChart, SheetView, button, esc, hbox, label, panel,
-                     sheet_frame, show_in_folder)
+                     sheet_frame, show_in_folder, open_file)
 from .editor import FormattedTextEdit
 
 MONTHS = ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек']
@@ -511,7 +512,7 @@ class RegistryPage(Page):
                            stretch_end=False))
 
         self.q = QLineEdit()
-        self.q.setPlaceholderText('Номер, тема, адресат, исполнитель или слово из текста')
+        self.q.setPlaceholderText('Номер СЗ или СЭД, тема, адресат, исполнитель, текст')
         self.q.setClearButtonEnabled(True)
         self.topic = QComboBox()
         self.year = QComboBox()
@@ -546,17 +547,18 @@ class RegistryPage(Page):
         self.executor_filter.currentIndexChanged.connect(lambda: self.reload())
         self.addressee_filter.currentIndexChanged.connect(lambda: self.reload())
 
-        self.table = read_only_table(['Номер', 'Дата', 'Тематика', 'Текст СЗ', 'Кому', 'Исполнитель'])
+        self.table = read_only_table(['Номер', 'Номер СЭД', 'Дата', 'Тематика', 'Текст СЗ', 'Кому', 'Исполнитель'])
         self.table.setShowGrid(True)
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.Interactive)
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.Fixed)
-        header.setSectionResizeMode(3, QHeaderView.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.Fixed)
+        header.setSectionResizeMode(4, QHeaderView.Stretch)
         char_width = self.table.fontMetrics().averageCharWidth()
-        self.table.setColumnWidth(2, char_width * self.TOPIC_WIDTH_CHARS + 16)
-        for col in (4, 5):
+        self.table.setColumnWidth(1, char_width * 20 + 16)
+        self.table.setColumnWidth(3, char_width * self.TOPIC_WIDTH_CHARS + 16)
+        for col in (5, 6):
             self.table.setColumnWidth(col, char_width * 18 + 16)
         self.table.cellDoubleClicked.connect(lambda row, col: self.open_selected())
         self.table.itemSelectionChanged.connect(self.update_buttons)
@@ -620,19 +622,19 @@ class RegistryPage(Page):
             compact = ' '.join(body.split())
             preview = (compact[:self.BODY_PREVIEW_LIMIT].rstrip() + '…'
                        if len(compact) > self.BODY_PREVIEW_LIMIT else compact)
-            values = [m['reg_number'], docx.format_date(m['memo_date']), m['topic_name'],
+            values = [m['reg_number'], m['sed_number'], docx.format_date(m['memo_date']), m['topic_name'],
                       preview, to, m['executor_name']]
             # Подсказка доступна над любой ячейкой записки; теги из текста
             # показываем буквально, исходные переносы сохраняем.
             tooltip = '<qt>%s</qt>' % esc(body).replace('\n', '<br>') if body else ''
             for col, value in enumerate(values):
-                if col == 2:
+                if col == 3:
                     value = self.table.fontMetrics().elidedText(
                         ' '.join(str(value or '').split()), Qt.ElideRight,
-                        self.table.columnWidth(2) - 12)
+                        self.table.columnWidth(3) - 12)
                 item = cell(value, m['id'])
                 item.setToolTip(('<qt><b>Тематика:</b> %s<br><br>%s</qt>' % (
-                    esc(m['topic_name']), esc(body).replace('\n', '<br>'))) if col == 2 else tooltip)
+                    esc(m['topic_name']), esc(body).replace('\n', '<br>'))) if col == 3 else tooltip)
                 self.table.setItem(row, col, item)
             if m['id'] == selected:
                 self.table.selectRow(row)
@@ -698,11 +700,92 @@ class RegistryPage(Page):
 
 # ---------- Просмотр СЗ ----------
 
+class PdfDropArea(QFrame):
+    file_dropped = pyqtSignal(str)
+    choose_requested = pyqtSignal()
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName('panel')
+        self.setAcceptDrops(True)
+        self.setAccessibleName('Загрузка скана PDF для текущей СЗ')
+        lay = QVBoxLayout(self)
+        lay.addWidget(label('Перетащите сюда один скан PDF', 'panelTitle', wrap=True))
+        lay.addWidget(label('После выбора файла укажите номер СЭД. Исходный файл останется на месте.', 'hint', wrap=True))
+        lay.addWidget(button('Выбрать PDF', on_click=self.choose_requested.emit))
+
+    @staticmethod
+    def local_pdf(mime):
+        urls = mime.urls() if mime.hasUrls() else []
+        if len(urls) == 1 and urls[0].isLocalFile():
+            path = urls[0].toLocalFile()
+            if os.path.isfile(path) and path.lower().endswith('.pdf'):
+                return path
+        return None
+
+    def dragEnterEvent(self, event):
+        if self.isEnabled() and self.local_pdf(event.mimeData()):
+            event.setDropAction(Qt.CopyAction)
+            event.accept()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        path = self.local_pdf(event.mimeData())
+        if self.isEnabled() and path:
+            event.setDropAction(Qt.CopyAction)
+            event.accept()
+            self.file_dropped.emit(path)
+        else:
+            event.ignore()
+
+
+class SedNumberDialog(QDialog):
+    def __init__(self, parent, initial=''):
+        super().__init__(parent)
+        self.setWindowTitle('Номер СЭД для скана PDF')
+        lay = QVBoxLayout(self)
+        lay.addWidget(label('Введите номер из другой системы', 'panelTitle'))
+        self.number = QLineEdit(initial)
+        self.number.setMaxLength(120)
+        self.number.setAccessibleName('Номер СЭД')
+        self.number.setPlaceholderText('1/441062/1100/СЗ')
+        lay.addWidget(self.number)
+        self.filename = label('', 'hint', wrap=True)
+        lay.addWidget(self.filename)
+        self.error = label('', 'warn', wrap=True)
+        self.error.hide()
+        lay.addWidget(self.error)
+        lay.addWidget(hbox(button('Сохранить PDF', 'primary', self.validate),
+                           button('Отмена', on_click=self.reject)))
+        self.number.textChanged.connect(self.update_name)
+        self.number.returnPressed.connect(self.validate)
+        self.update_name()
+        self.resize(480, 200)
+
+    def update_name(self):
+        try:
+            self.filename.setText('Имя файла: ' + scans.pdf_name(self.number.text()))
+        except Exception:
+            self.filename.setText('Пример: 1/441062/1100/СЗ → 1_441062_1100_СЗ.pdf')
+
+    def validate(self):
+        try:
+            self.value = scans.clean_number(self.number.text())
+        except Exception as e:
+            self.error.setText(str(e))
+            self.error.show()
+            self.number.setFocus()
+            return
+        self.accept()
+
+
 class MemoPage(Page):
     def __init__(self, win):
         super().__init__(win)
         self.memo_id = None
         self.memo = None
+        self.sed_dirty = False
 
         side = QWidget()
         lay = page_layout(side)
@@ -715,6 +798,28 @@ class MemoPage(Page):
         self.details.setTextInteractionFlags(Qt.TextSelectableByMouse)
         box_lay.addWidget(self.details)
         lay.addWidget(box)
+
+        scan_box, scan_lay = panel()
+        scan_lay.addWidget(field_label('Номер СЭД'))
+        self.sed_number = QLineEdit()
+        self.sed_number.setMaxLength(120)
+        self.sed_number.setPlaceholderText('1/441062/1100/СЗ')
+        self.sed_number.setAccessibleName('Номер СЭД')
+        self.sed_number.textEdited.connect(self.sed_edited)
+        scan_lay.addWidget(self.sed_number)
+        self.save_sed_btn = button('Сохранить номер СЭД', on_click=self.save_sed_number)
+        scan_lay.addWidget(self.save_sed_btn)
+        scan_lay.addWidget(label('Номер можно сохранить без загрузки PDF. При изменении номера '
+                                'привязанный скан переименуется.', 'hint', wrap=True))
+        self.scan_status = label('', 'muted', wrap=True)
+        scan_lay.addWidget(self.scan_status)
+        self.open_scan_btn = button('Открыть скан PDF', on_click=self.open_scan)
+        scan_lay.addWidget(self.open_scan_btn)
+        lay.addWidget(scan_box)
+        self.drop_area = PdfDropArea()
+        self.drop_area.file_dropped.connect(self.upload_scan)
+        self.drop_area.choose_requested.connect(self.choose_scan)
+        lay.addWidget(self.drop_area)
 
         self.word_btn = button('Открыть Word', 'primary', self.open_word)
         self.folder_btn = button('Показать в папке', on_click=self.show_folder)
@@ -738,12 +843,17 @@ class MemoPage(Page):
 
     def show_memo(self, memo_id):
         self.memo_id = memo_id
+        self.sed_dirty = False
         self.reload()
 
     def reload(self):
         s = self.store
         self.memo = s.one('SELECT * FROM memos WHERE id = ?', (self.memo_id,))
         m = self.memo
+        self.drop_area.setEnabled(bool(m))
+        self.save_sed_btn.setEnabled(bool(m))
+        self.sed_number.setEnabled(bool(m))
+        self.open_scan_btn.setEnabled(False)
         for b in (self.word_btn, self.folder_btn, self.edit_btn, self.delete_btn):
             b.setEnabled(bool(m))
         if not m:
@@ -751,6 +861,11 @@ class MemoPage(Page):
             self.details.setText('Её удалили. Вернитесь в реестр.')
             self.sheet.clear()
             return
+        self.sed_number.setText(m['sed_number'])
+        self.sed_dirty = False
+        scan = scans.document_path(s, m)
+        self.open_scan_btn.setEnabled(bool(scan))
+        self.scan_status.setText(os.path.basename(scan) if scan else 'Скан PDF не найден в папке СЗ.')
         addressees = s.memo_addressees(m['id'])
         path = s.document_path(m['file_path'])
         rows = [
@@ -785,6 +900,73 @@ class MemoPage(Page):
 
     def open_word(self):
         self.win.open_memo_document(self.memo_id)
+
+    def sed_edited(self):
+        self.sed_dirty = True
+
+    def has_unsaved_changes(self):
+        return bool(self.memo and self.sed_dirty and
+                    self.sed_number.text().strip().upper() != self.memo['sed_number'])
+
+    def on_external_change(self):
+        if not self.sed_dirty:
+            self.reload()
+
+    def choose_scan(self):
+        source, _ = QFileDialog.getOpenFileName(self, 'Выберите скан СЗ', '', 'PDF (*.pdf)')
+        if source:
+            self.upload_scan(source)
+
+    def upload_scan(self, source):
+        ok, _ = self.win.act(lambda: scans.check_pdf(source))
+        if not ok:
+            return
+        was_dirty = self.sed_dirty
+        self.sed_dirty = True  # обновления коллег не подменяют снимок во время диалога
+        dialog = SedNumberDialog(self, self.sed_number.text())
+        if dialog.exec_() != QDialog.Accepted:
+            self.sed_dirty = was_dirty
+            return
+        self.sed_number.setText(dialog.value)
+        self.sed_dirty = True
+        self.save_registration(source)
+
+    def save_sed_number(self):
+        self.save_registration()
+
+    def save_registration(self, source=None):
+        if not self.memo:
+            return
+        expected = (self.memo['sed_number'], self.memo['scan_path'])
+
+        def save(overwrite=False):
+            try:
+                return scans.save(self.store, self.memo_id, self.sed_number.text(),
+                                  source_path=source, expected=expected, overwrite=overwrite)
+            except scans.ScanExists as e:
+                return {'exists': str(e)}
+
+        ok, result = self.win.act(save)
+        if not ok:
+            return
+        if result.get('exists'):
+            if not self.win.confirm(result['exists']):
+                return
+            ok, result = self.win.act(lambda: save(True))
+            if not ok:
+                return
+        self.reload()
+        self.win.flash('PDF сохранён в папку СЗ, номер СЭД записан в реестр.' if source else
+                       'Номер СЭД сохранён.' + (' Скан привязан.' if result['scan_path'] else
+                       ' PDF можно загрузить позже или поместить в папку СЗ под именем %s.'
+                       % scans.pdf_name(result['sed_number'])))
+
+    def open_scan(self):
+        scan = scans.document_path(self.store, self.memo)
+        if scan:
+            open_file(scan)
+        else:
+            self.win.flash('Скан PDF не найден. Загрузите его или проверьте папку СЗ.', 'error')
 
     def show_folder(self):
         path = self.store.document_path(self.memo and self.memo['file_path'])

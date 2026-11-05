@@ -21,6 +21,74 @@ from test_core import seed  # noqa: E402
 
 @unittest.skipIf(QApplication is None, 'PyQt5 не установлен')
 class WindowTest(unittest.TestCase):
+    def test_pdf_drop_number_dialog_and_independent_number_edit(self):
+        from pathlib import Path
+        from unittest.mock import patch
+        from PyQt5.QtCore import QMimeData, QUrl, QPointF
+        from PyQt5.QtGui import QDropEvent
+        from PyQt5.QtWidgets import QDialog
+        from sz import actions, scans
+        from sz.ui.pages import PdfDropArea
+        from sz.ui.window import MainWindow
+        from test_core import memo_data
+
+        root = tempfile.TemporaryDirectory()
+        self.addCleanup(root.cleanup)
+        store = Store(root.name)
+        store.open()
+        seed(store)
+        memo_id, error = actions.create_memo(store, memo_data(), [1])
+        self.assertIsNone(error)
+        store.close()
+        app = QApplication.instance() or QApplication([])
+        win = MainWindow(lambda: root.name)
+        self.addCleanup(win.close)
+        self.assertTrue(win.connect())
+        win.navigate('memo', memo_id)
+        page = win.pages['memo']
+        source = Path(root.name) / 'scan.pdf'
+        source.write_bytes(b'%PDF-1.4\n%%EOF\n')
+        with patch('sz.ui.pages.SedNumberDialog') as dialog:
+            dialog.return_value.exec_.return_value = QDialog.Rejected
+            page.upload_scan(str(source))
+        self.assertEqual(win.store.one('SELECT sed_number FROM memos')['sed_number'], '')
+        mime = QMimeData()
+        mime.setUrls([QUrl.fromLocalFile(str(source))])
+        self.assertEqual(PdfDropArea.local_pdf(mime), str(source))
+        with patch('sz.ui.pages.SedNumberDialog') as dialog:
+            dialog.return_value.exec_.return_value = QDialog.Accepted
+            dialog.return_value.value = '1/441062/1100/СЗ'
+            event = QDropEvent(QPointF(10, 10), Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier)
+            page.drop_area.dropEvent(event)
+        self.assertTrue(page.open_scan_btn.isEnabled())
+        self.assertEqual(page.sed_number.text(), '1/441062/1100/СЗ')
+        self.assertTrue(source.exists())
+        page.sed_number.setText('1/441062/1101/СЗ')
+        page.save_sed_btn.click()
+        memo = win.store.one('SELECT * FROM memos WHERE id = ?', (memo_id,))
+        self.assertTrue(scans.document_path(win.store, memo).endswith('1_441062_1101_СЗ.pdf'))
+        page.sed_number.setText('1/441062/1102/СЗ')
+        page.sed_number.textEdited.emit(page.sed_number.text())
+        win.confirm = lambda message: False
+        win.navigate('list')
+        self.assertIs(win.stack.currentWidget(), page)
+        page.on_external_change()
+        self.assertEqual(page.sed_number.text(), '1/441062/1102/СЗ')
+        page.sed_number.setText(memo['sed_number'])
+        win.confirm = lambda message: True
+        win.navigate('list')
+        registry = win.pages['list']
+        self.assertEqual(registry.table.horizontalHeaderItem(1).text(), 'Номер СЭД')
+        self.assertEqual(registry.table.item(0, 1).text(), '1/441062/1101/СЗ')
+        registry.q.setText('441062/1101/сз')
+        registry.reload()
+        self.assertEqual(registry.table.rowCount(), 1)
+        mime.setUrls([QUrl.fromLocalFile(str(source)), QUrl.fromLocalFile(str(source))])
+        self.assertIsNone(PdfDropArea.local_pdf(mime))
+        mime.setUrls([QUrl('https://example.com/scan.pdf')])
+        self.assertIsNone(PdfDropArea.local_pdf(mime))
+        app.processEvents()
+
     def test_edit_memo_locked_word_retry_and_conflict(self):
         from pathlib import Path
         from sz import actions
@@ -214,13 +282,13 @@ class WindowTest(unittest.TestCase):
         other.write(lambda s: s.run("UPDATE memos SET topic_name = 'Изменено'"))
         other.close()
         win.check_changes()
-        self.assertEqual(win.pages['list'].table.item(0, 2).text(), 'Изменено')
+        self.assertEqual(win.pages['list'].table.item(0, 3).text(), 'Изменено')
 
         # Полный текст показывается над любой ячейкой, а в колонке — краткий.
         registry = win.pages['list']
         self.assertTrue(registry.table.showGrid())
-        self.assertEqual(registry.table.horizontalHeaderItem(3).text(), 'Текст СЗ')
-        self.assertEqual(registry.table.item(0, 3).text(), 'Прошу согласовать.')
+        self.assertEqual(registry.table.horizontalHeaderItem(4).text(), 'Текст СЗ')
+        self.assertEqual(registry.table.item(0, 4).text(), 'Прошу согласовать.')
         registry.executor_filter.setCurrentIndex(1)
         registry.addressee_filter.setCurrentIndex(1)
         self.assertEqual(registry.table.rowCount(), 1)
@@ -237,13 +305,13 @@ class WindowTest(unittest.TestCase):
         win.store.write(lambda s: s.run('UPDATE memos SET body = ?', (body,)))
         registry.reload()
         compact = ' '.join(body.split())
-        self.assertEqual(registry.table.item(0, 3).text(), compact[:200].rstrip() + '…')
+        self.assertEqual(registry.table.item(0, 4).text(), compact[:200].rstrip() + '…')
         for col in range(registry.table.columnCount()):
             tooltip = registry.table.item(0, col).toolTip()
             self.assertIn('&lt;важно&gt; &amp; проверка<br>', tooltip)
             self.assertIn(body.split('\n')[1], tooltip)
         registry.table.selectRow(0)
-        registry.table.cellDoubleClicked.emit(0, 3)
+        registry.table.cellDoubleClicked.emit(0, 4)
         self.assertIs(win.stack.currentWidget(), win.pages['memo'])
         win.navigate('list')
         registry.table.selectRow(0)

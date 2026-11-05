@@ -169,11 +169,14 @@ class MainWindow(QMainWindow):
                 'В папке %s ещё нет базы служебных записок. Создать новую базу в этой папке?' % folder):
             return
         current = self.stack.currentWidget()
-        if isinstance(current, pages.EditMemoPage) and current.has_unsaved_changes():
+        if isinstance(current, (pages.EditMemoPage, pages.MemoPage)) and current.has_unsaved_changes():
             if not self.confirm('Сменить общую папку? Несохранённые изменения формы будут потеряны. '
                                 'Если Word не обновлён, его потребуется обновить позже.'):
                 return
-            current.edit_snapshot = None
+            if isinstance(current, pages.EditMemoPage):
+                current.edit_snapshot = None
+            else:
+                current.sed_dirty = False
         QSettings().setValue('folder', folder)
         self.connect()
 
@@ -190,7 +193,7 @@ class MainWindow(QMainWindow):
         if not self.store:
             return
         current = self.stack.currentWidget()
-        if isinstance(current, pages.EditMemoPage) and current.has_unsaved_changes():
+        if isinstance(current, (pages.EditMemoPage, pages.MemoPage)) and current.has_unsaved_changes():
             if not self.confirm('Уйти из редактирования? Несохранённые изменения формы будут потеряны. '
                                 'Если Word не обновлён, его потребуется обновить позже.'):
                 return
@@ -284,7 +287,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         current = self.stack.currentWidget()
-        if isinstance(current, pages.EditMemoPage) and current.has_unsaved_changes():
+        if isinstance(current, (pages.EditMemoPage, pages.MemoPage)) and current.has_unsaved_changes():
             if not self.confirm('Закрыть приложение? Несохранённые изменения формы будут потеряны. '
                                 'Если Word не обновлён, его потребуется обновить позже.'):
                 event.ignore()

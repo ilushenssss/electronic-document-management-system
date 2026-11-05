@@ -325,7 +325,7 @@ def _memo_filter(q='', topic_id=None, year=None, executor_name=None, addressee_d
                 'WHERE a.memo_id = memos.id AND a.department = ?)')
         params.append(addressee_department)
     if q:
-        keys = ('reg_number', 'topic_name', 'addressee_department', 'addressee_name',
+        keys = ('reg_number', 'sed_number', 'topic_name', 'addressee_department', 'addressee_name',
                 'executor_name', 'signer_name', 'body', 'attachment')
         text = " || ' ' || ".join("COALESCE(%s, '')" % key for key in keys)
         sql += ' AND instr(unicode_lower(%s), ?) > 0' % text
