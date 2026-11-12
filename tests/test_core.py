@@ -40,7 +40,7 @@ class DocxTest(unittest.TestCase):
     def test_formatting(self):
         self.assertEqual(docx.format_reg_number('НТЦ', 7, 2026), 'НТЦ-0007-26')
         self.assertEqual(docx.format_date('2026-01-14'), '14.01.2026')
-        self.assertEqual(docx.format_long_date('2026-01-14'), '"14" января 2026 г.')
+        self.assertEqual(docx.format_long_date('2026-01-14'), '14 января 2026 г.')
         self.assertEqual(docx.short_name('Иванов Иван Иванович'), 'Иванов И.И.')
         self.assertEqual(docx.short_name('Иванов И. И.'), 'Иванов И.И.')
         self.assertEqual(docx.greeting([{'head_name': 'Петров Пётр Петрович'}]), 'Уважаемый Пётр Петрович!')

@@ -27,9 +27,9 @@ def format_date(iso):
 
 
 def format_long_date(iso):
-    """"14" января 2026 г."""
+    """14 января 2026 г."""
     y, m, d = iso[:10].split('-')
-    return '"%s" %s %s г.' % (d, MONTHS_GEN[int(m) - 1], y)
+    return '%s %s %s г.' % (d, MONTHS_GEN[int(m) - 1], y)
 
 
 def format_reg_number(prefix, number, year):
