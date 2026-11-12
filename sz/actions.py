@@ -88,13 +88,13 @@ def create_memo(store, data, addressee_ids):
             'INSERT INTO memos (number, year, reg_number, memo_date, topic_id, topic_name, '
             'addressee_id, addressee_department, addressee_position, addressee_name, '
             'body, attachment, signer_id, signer_name, signer_position, '
-            'executor_id, executor_name, executor_phone, city, org_name, body_rich) '
-            'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            'executor_id, executor_name, executor_phone, city, org_name, body_rich, configuration_control) '
+            'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
             (number, year, docx.format_reg_number(s.number_prefix, number, year), data['memo_date'],
              topic['id'], topic['name'], addrs[0]['id'], joined('department'), joined('head_position'),
              joined('head_name'), body, (data.get('attachment') or '').strip(), signer['id'],
              signer['full_name'], signer['position'], executor['id'], executor['full_name'],
-             executor['phone'], s.city, s.org_name, body_rich))
+             executor['phone'], s.city, s.org_name, body_rich, int(bool(data.get('configuration_control')))))
         for i, a in enumerate(addrs):
             s.run('INSERT INTO memo_addressees (memo_id, ord, addressee_id, department, head_position, '
                   'head_name, head_name_dative) VALUES (?, ?, ?, ?, ?, ?, ?)',
@@ -194,6 +194,8 @@ def update_memo(store, snapshot, expected_version, data, addressee_keys):
                 raise StoreError('Выбранного адресата удалили. Выберите заново.')
             addrs.append(addr)
         values = {'memo_date': date.isoformat(), 'body': body,
+                  'configuration_control': int(bool(data.get('configuration_control',
+                                                              current['memo'].get('configuration_control', 0)))),
                   'body_rich': docx.dump_rich(rich) if rich else None,
                   'attachment': (data.get('attachment') or '').strip(),
                   'topic_id': topic['id'], 'topic_name': topic['name'],

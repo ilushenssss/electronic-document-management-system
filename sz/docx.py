@@ -211,7 +211,10 @@ def memo_blocks(m, addressees, preview=False):
         add({'text': {'ph': 'Должность адресата'}, 'align': 'right'},
             {'text': {'ph': 'Фамилия И.О.'}, 'align': 'right'})
 
-    add({'text': v(m.get('topic_name'), 'Тематика работ')})
+    topic_blocks = [{'text': v(m.get('topic_name'), 'Тематика работ')}]
+    if m.get('configuration_control'):
+        topic_blocks.append({'text': 'Для конфигурационного\nконтроля'})
+    add(*topic_blocks)
 
     add({'text': greeting(addressees) or v('', 'Уважаемый Имя Отчество!'), 'align': 'center'})
 

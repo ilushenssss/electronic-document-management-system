@@ -122,6 +122,8 @@ class NewMemoPage(Page):
         lay.addWidget(field_label('Тематика работ'))
         self.topic = QComboBox()
         lay.addWidget(self.topic)
+        self.configuration_control = QCheckBox('Для конфигурационного контроля')
+        lay.addWidget(self.configuration_control)
 
         lay.addWidget(field_label('Кому'))
         self.addr_filter = QLineEdit()
@@ -197,7 +199,8 @@ class NewMemoPage(Page):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(splitter)
 
-        for signal in (self.topic.currentIndexChanged, self.executor.currentIndexChanged,
+        for signal in (self.topic.currentIndexChanged, self.configuration_control.toggled,
+                       self.executor.currentIndexChanged,
                        self.date.dateChanged, self.body.changed, self.attachment.textChanged):
             signal.connect(self.update_preview)
 
@@ -301,6 +304,7 @@ class NewMemoPage(Page):
     def form_data(self):
         return {
             'topic_id': self.topic.currentData(),
+            'configuration_control': self.configuration_control.isChecked(),
             'executor_id': self.executor.currentData(),
             'memo_date': self.date.date().toString('yyyy-MM-dd'),
             'body_rich': self.body.paragraphs(),
@@ -319,6 +323,7 @@ class NewMemoPage(Page):
     def clear_form(self):
         """Очистить пользовательский ввод; дата и подписант остаются автоматическими."""
         self.topic.setCurrentIndex(0)
+        self.configuration_control.setChecked(False)
         self.executor.setCurrentIndex(0)
         self.addr_filter.clear()
         self.executor_filter.clear()
@@ -349,6 +354,7 @@ class NewMemoPage(Page):
         signer = self.signer or {}
         self.sheet.show_memo({
             'reg_number': reg, 'memo_date': d['memo_date'], 'topic_name': topic.get('name'),
+            'configuration_control': d['configuration_control'],
             'body': docx.rich_plain_text(d['body_rich']), 'body_rich': docx.dump_rich(d['body_rich']), 'attachment': d['attachment'], 'org_name': self.org_name,
             'city': self.city, 'signer_name': signer.get('full_name'),
             'signer_position': signer.get('position'), 'executor_name': executor.get('full_name'),
@@ -374,6 +380,7 @@ class NewMemoPage(Page):
         memo_id, doc_error = result
         reg = self.store.one('SELECT reg_number FROM memos WHERE id = ?', (memo_id,))['reg_number']
         self.chosen = []
+        self.configuration_control.setChecked(False)
         self.body.reset()
         self.attachment.clear()
         self.date.setDate(QDate.currentDate())
@@ -416,6 +423,7 @@ class EditMemoPage(NewMemoPage):
         super().reload()
         m = snapshot['memo']
         self.topic.setCurrentIndex(self.topic.findData(-1))
+        self.configuration_control.setChecked(bool(m.get('configuration_control')))
         self.executor.setCurrentIndex(self.executor.findData(-1))
         self.addr_filter.clear()
         self.executor_filter.clear()
