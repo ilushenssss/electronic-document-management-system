@@ -232,7 +232,8 @@ def memo_blocks(m, addressees, preview=False):
 
     attachment = split_lines(m.get('attachment'))
     if attachment:
-        add(*[{'runs': [{'text': '' if i else 'Приложение: '}, {'text': line}], 'align': 'both'}
+        add(*[{'runs': [{'text': '' if i else 'Приложение: '}, {'text': line}], 'align': 'both',
+               'first_line': True, 'line_spacing': 276}  # 1,25 см; интервал 1,15
               for i, line in enumerate(attachment)])
 
     # Должность подписанта может быть в несколько строк; Фамилия И.О. - справа на последней
