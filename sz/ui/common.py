@@ -148,7 +148,21 @@ def show_in_folder(path):
 SHEET_SCALE = 0.8  # лист на экране чуть мельче документа
 
 
-from .preview import WordPreview as SheetView  # общий точный предпросмотр Word
+class SheetView(QTextBrowser):
+    """Лист строится из тех же блоков, что и документ Word (docx.memo_blocks)."""
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName('sheet')
+        self.setOpenLinks(False)
+        self.setMinimumWidth(380)
+        self.document().setDocumentMargin(34)
+        font = QFont(docx.FONT)
+        font.setPointSizeF(docx.FONT_SIZE * SHEET_SCALE)
+        self.document().setDefaultFont(font)
+
+    def show_memo(self, memo, addressees, preview=False):
+        self.setHtml(sheet_html(docx.memo_blocks(memo, addressees, preview=preview)))
 
 
 def sheet_html(blocks):
@@ -327,5 +341,4 @@ class BarList(QWidget):
                               % (r['label'], r['n'], round(r['n'] / self.total * 100)), self)
         else:
             QToolTip.hideText()
-
 
