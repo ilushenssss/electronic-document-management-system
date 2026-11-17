@@ -956,7 +956,7 @@ class MemoPage(Page):
         memo = dict(m)
         if memo['org_name'] is None:
             memo['org_name'] = s.org_name
-        self.sheet.show_memo(memo, addressees)
+        self.sheet.show_memo(memo, addressees, document_path=path)
 
     def open_word(self):
         self.win.open_memo_document(self.memo_id)
@@ -1462,4 +1462,5 @@ class DirsPage(Page):
             tab.on_external_change()
         else:
             tab.reload()
+
 
