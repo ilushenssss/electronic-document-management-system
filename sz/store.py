@@ -45,6 +45,16 @@ CREATE TABLE IF NOT EXISTS topics (
   id   INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL UNIQUE
 );
+CREATE TABLE IF NOT EXISTS templates (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK(kind IN ('memo', 'fragment')),
+  body TEXT NOT NULL,
+  body_rich TEXT,
+  topic_id INTEGER,
+  active INTEGER NOT NULL DEFAULT 1,
+  version INTEGER NOT NULL DEFAULT 1
+);
 CREATE TABLE IF NOT EXISTS memos (
   id                   INTEGER PRIMARY KEY AUTOINCREMENT,
   number               INTEGER NOT NULL,
@@ -397,4 +407,5 @@ class Store:
             if temp_path and os.path.exists(temp_path):
                 os.unlink(temp_path)
         return '/'.join(rel_parts)
+
 

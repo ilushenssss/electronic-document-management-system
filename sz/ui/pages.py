@@ -11,11 +11,12 @@ from PyQt5.QtWidgets import (QAbstractItemView, QComboBox, QDateEdit, QFormLayou
                              QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
                              QDialog, QTextBrowser, QFrame, QFileDialog, QCheckBox)
 
-from .. import actions, docx, scans
+from .. import actions, docx, scans, templates
 from ..store import DEFAULT_NUMBER_PREFIX, DEFAULT_OUTPUT_DIR
 from .common import (BarList, ColumnChart, SheetView, button, esc, hbox, label, panel,
                      sheet_frame, show_in_folder, open_file)
 from .editor import FormattedTextEdit
+from .templates import TemplatesTab, TemplateFieldsDialog
 
 MONTHS = ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек']
 MONTHS_FULL = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август',
@@ -145,6 +146,15 @@ class NewMemoPage(Page):
         lay.addWidget(self.date)
 
         lay.addWidget(field_label('Текст'))
+        self.template_picker = QComboBox()
+        self.template_picker.setAccessibleName('Шаблон СЗ или формулировка')
+        self.template_insert = button('Вставить', on_click=self.insert_template)
+        self.template_manage = button('Шаблоны…', 'link', lambda: self.win.navigate('dirs', 'templates'))
+        lay.addWidget(hbox(self.template_picker, self.template_insert, self.template_manage))
+        lay.addWidget(label('Полная СЗ заменяет текст; формулировка вставляется в позицию курсора.',
+                            'hint', wrap=True))
+        self.template_picker.currentIndexChanged.connect(
+            lambda: self.template_insert.setEnabled(self.template_picker.currentData() is not None))
         self.body = FormattedTextEdit('Каждый абзац с новой строки')
         self.body.setMinimumHeight(220)
         lay.addWidget(self.body)
@@ -203,6 +213,57 @@ class NewMemoPage(Page):
                        self.executor.currentIndexChanged,
                        self.date.dateChanged, self.body.changed, self.attachment.textChanged):
             signal.connect(self.update_preview)
+        self.topic.currentIndexChanged.connect(self.reload_template_picker)
+
+    def reload_template_picker(self):
+        if not self.store:
+            return
+        topic_id = self.topic.currentData()
+        if topic_id == -1 and self.edit_snapshot:
+            topic_id = self.edit_snapshot['memo']['topic_id']
+        rows = templates.list_templates(self.store, active_only=True, topic_id=topic_id)
+        fill_combo(self.template_picker, rows,
+                   lambda row: row['name'] + ' — ' + templates.KINDS[row['kind']],
+                   'Выберите шаблон или формулировку' if rows else 'Нет шаблонов — добавьте в справочнике')
+        self.template_insert.setEnabled(self.template_picker.currentData() is not None)
+
+    def insert_template(self):
+        row_id = self.template_picker.currentData()
+        if row_id is None:
+            return
+        ok, row = self.win.act(lambda: templates.get_template(self.store, row_id))
+        if not ok:
+            self.reload_template_picker()
+            return
+        if not row['active']:
+            self.win.flash('Шаблон отключён. Выберите другой шаблон.', 'error')
+            self.reload_template_picker()
+            return
+        replace = row['kind'] == 'memo'
+        if replace and self.body.plain_text().strip() and not self.win.confirm(
+                'Заменить весь текст СЗ шаблоном «%s»? Вставку можно отменить сочетанием Ctrl+Z.' % row['name']):
+            return
+        content = templates.paragraphs(row)
+        names = templates.fields(content)
+        topic = next((r for r in self.topics if r['id'] == self.topic.currentData()), {})
+        if not topic and row['topic_id']:
+            topic = next((r for r in self.topics if r['id'] == row['topic_id']), {})
+        executor = next((r for r in self.employees if r['id'] == self.executor.currentData()), {})
+        defaults = {'дата': self.date.date().toString('dd.MM.yyyy'),
+                    'исполнитель': executor.get('full_name', ''), 'тематика': topic.get('name', '')}
+        values = {}
+        if names:
+            dialog = TemplateFieldsDialog(names, defaults, self)
+            if dialog.exec_() != QDialog.Accepted:
+                return
+            values = dialog.values()
+        ok, rendered = self.win.act(lambda: templates.render(content, values))
+        if ok:
+            if self.topic.currentData() is None and row['topic_id']:
+                index = self.topic.findData(row['topic_id'])
+                if index >= 0:
+                    self.topic.setCurrentIndex(index)
+            self.body.insert_paragraphs(rendered, replace=replace)
 
     def reload(self):
         s = self.store
@@ -267,6 +328,7 @@ class NewMemoPage(Page):
         else:
             self.signer_label.setText('<span style="color:#6b7385">не назначен</span>')
         self.update_preview()
+        self.reload_template_picker()
 
     def on_external_change(self):
         # Введённый текст не трогаем, обновляем только списки и номер
@@ -334,6 +396,7 @@ class NewMemoPage(Page):
         self.addr_list.blockSignals(False)
         self.update_picker()
         self.body.reset()
+        self.template_picker.setCurrentIndex(0)
         self.attachment.clear()
         self.date.setDate(QDate.currentDate())
         self.update_preview()
@@ -382,6 +445,7 @@ class NewMemoPage(Page):
         self.chosen = []
         self.configuration_control.setChecked(False)
         self.body.reset()
+        self.template_picker.setCurrentIndex(0)
         self.attachment.clear()
         self.date.setDate(QDate.currentDate())
         self.win.navigate('memo', memo_id)
@@ -1430,7 +1494,7 @@ class SettingsTab(QWidget):
 
 
 class DirsPage(Page):
-    KINDS = ['employees', 'addressees', 'topics', 'settings']
+    KINDS = ['employees', 'addressees', 'topics', 'templates', 'settings']
 
     def __init__(self, win):
         super().__init__(win)
@@ -1438,10 +1502,13 @@ class DirsPage(Page):
         self.tabs = QTabWidget()
         self.tab_widgets = {}
         for kind in self.KINDS:
-            w = SettingsTab(self) if kind == 'settings' else DirectoryTab(self, kind)
+            w = (SettingsTab(self) if kind == 'settings' else
+                 TemplatesTab(self) if kind == 'templates' else DirectoryTab(self, kind))
             self.tab_widgets[kind] = w
-            self.tabs.addTab(w, 'Настройки' if kind == 'settings' else actions.DIRECTORIES[kind]['title'])
-        self.tabs.currentChanged.connect(lambda i: self.current().reload())
+            self.tabs.addTab(w, 'Настройки' if kind == 'settings' else
+                             'Шаблоны СЗ' if kind == 'templates' else actions.DIRECTORIES[kind]['title'])
+        self.previous_tab = 0
+        self.tabs.currentChanged.connect(self.change_tab)
         lay.addWidget(self.tabs, 1)
 
     def current(self):
@@ -1452,6 +1519,26 @@ class DirsPage(Page):
             self.tabs.blockSignals(True)
             self.tabs.setCurrentWidget(self.tab_widgets[kind])
             self.tabs.blockSignals(False)
+            self.previous_tab = self.tabs.currentIndex()
+
+    def change_tab(self, index):
+        old = self.tabs.widget(self.previous_tab)
+        if isinstance(old, TemplatesTab) and old.has_unsaved_changes():
+            if not old.may_discard():
+                self.tabs.blockSignals(True)
+                self.tabs.setCurrentIndex(self.previous_tab)
+                self.tabs.blockSignals(False)
+                return
+            old.reset_form()
+        self.previous_tab = index
+        self.current().reload()
+
+    def has_unsaved_changes(self):
+        tab = self.current()
+        return isinstance(tab, TemplatesTab) and tab.has_unsaved_changes()
+
+    def discard_changes(self):
+        self.tab_widgets['templates'].reset_form()
 
     def reload(self):
         self.current().reload()
@@ -1462,4 +1549,5 @@ class DirsPage(Page):
             tab.on_external_change()
         else:
             tab.reload()
+
 

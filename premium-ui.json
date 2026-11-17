@@ -1,0 +1,17 @@
+{
+  "profile": "product-admin",
+  "sourceRoots": ["sz/ui"],
+  "locale": "ru-RU",
+  "canonicalMap": "UX-CONTRACT.md",
+  "requiredCapabilities": ["Table Selection", "Select/Listbox", "Form", "Scrollbar", "Toast", "CRUD"],
+  "ownership": {"Select/Listbox": "native"},
+  "requiredCommands": ["unit", "compile"],
+  "commands": {
+    "unit": "python -m unittest discover -s tests",
+    "compile": "python -m compileall -q sz tests"
+  },
+  "evidence": {
+    "crudFullFlow": "tests/test_templates.py",
+    "failurePaths": "tests/test_templates.py"
+  }
+}

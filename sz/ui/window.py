@@ -169,12 +169,17 @@ class MainWindow(QMainWindow):
                 'В папке %s ещё нет базы служебных записок. Создать новую базу в этой папке?' % folder):
             return
         current = self.stack.currentWidget()
-        if isinstance(current, (pages.EditMemoPage, pages.MemoPage)) and current.has_unsaved_changes():
-            if not self.confirm('Сменить общую папку? Несохранённые изменения формы будут потеряны. '
-                                'Если Word не обновлён, его потребуется обновить позже.'):
+        if isinstance(current, (pages.EditMemoPage, pages.MemoPage, pages.DirsPage)) and current.has_unsaved_changes():
+            message = ('Сменить общую папку? Несохранённые изменения шаблона будут потеряны.'
+                       if isinstance(current, pages.DirsPage) else
+                       'Сменить общую папку? Несохранённые изменения формы будут потеряны. '
+                       'Если Word не обновлён, его потребуется обновить позже.')
+            if not self.confirm(message):
                 return
             if isinstance(current, pages.EditMemoPage):
                 current.edit_snapshot = None
+            elif isinstance(current, pages.DirsPage):
+                current.discard_changes()
             else:
                 current.sed_dirty = False
         QSettings().setValue('folder', folder)
@@ -193,10 +198,15 @@ class MainWindow(QMainWindow):
         if not self.store:
             return
         current = self.stack.currentWidget()
-        if isinstance(current, (pages.EditMemoPage, pages.MemoPage)) and current.has_unsaved_changes():
-            if not self.confirm('Уйти из редактирования? Несохранённые изменения формы будут потеряны. '
-                                'Если Word не обновлён, его потребуется обновить позже.'):
+        if isinstance(current, (pages.EditMemoPage, pages.MemoPage, pages.DirsPage)) and current.has_unsaved_changes():
+            message = ('Уйти из справочника? Несохранённые изменения шаблона будут потеряны.'
+                       if isinstance(current, pages.DirsPage) else
+                       'Уйти из редактирования? Несохранённые изменения формы будут потеряны. '
+                       'Если Word не обновлён, его потребуется обновить позже.')
+            if not self.confirm(message):
                 return
+        if isinstance(current, pages.DirsPage) and current.has_unsaved_changes():
+            current.discard_changes()
         self.flash_label.hide()
         widget = self.pages[page]
         active = 'list' if page in ('memo', 'edit') else page
@@ -287,12 +297,16 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         current = self.stack.currentWidget()
-        if isinstance(current, (pages.EditMemoPage, pages.MemoPage)) and current.has_unsaved_changes():
-            if not self.confirm('Закрыть приложение? Несохранённые изменения формы будут потеряны. '
-                                'Если Word не обновлён, его потребуется обновить позже.'):
+        if isinstance(current, (pages.EditMemoPage, pages.MemoPage, pages.DirsPage)) and current.has_unsaved_changes():
+            message = ('Закрыть приложение? Несохранённые изменения шаблона будут потеряны.'
+                       if isinstance(current, pages.DirsPage) else
+                       'Закрыть приложение? Несохранённые изменения формы будут потеряны. '
+                       'Если Word не обновлён, его потребуется обновить позже.')
+            if not self.confirm(message):
                 event.ignore()
                 return
         if self.store:
             self.store.close()
         super().closeEvent(event)
+
 

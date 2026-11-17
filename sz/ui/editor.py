@@ -6,7 +6,7 @@
 """
 from PyQt5.QtCore import QPointF, QRectF, Qt, pyqtSignal
 from PyQt5.QtGui import (QColor, QFont, QIcon, QKeySequence, QPainter, QPainterPath, QPen, QPixmap,
-                         QTextBlockFormat, QTextCharFormat, QTextDocument)
+                         QTextBlockFormat, QTextCharFormat, QTextCursor, QTextDocument)
 from PyQt5.QtWidgets import (QAction, QActionGroup, QComboBox, QFrame, QHBoxLayout, QTextEdit, QToolButton,
                              QVBoxLayout, QWidget)
 
@@ -288,6 +288,30 @@ class FormattedTextEdit(QWidget):
         self.sync()
         self.changed.emit()
 
+    def insert_paragraphs(self, paragraphs, replace=False):
+        """Вставка в курсор или замена всего текста с единой операцией Undo."""
+        paragraphs = docx.normalize_rich(paragraphs)
+        if not paragraphs:
+            return
+        cursor = self.edit.textCursor()
+        cursor.beginEditBlock()
+        if replace:
+            cursor.select(QTextCursor.Document)
+        cursor.removeSelectedText()
+        for i, paragraph in enumerate(paragraphs):
+            fmt = block_format(paragraph.get('align', 'both'), paragraph.get('indent', True))
+            if i:
+                cursor.insertBlock(fmt)
+            elif replace or not cursor.block().text():
+                cursor.setBlockFormat(fmt)
+            for run in paragraph['runs']:
+                cursor.insertText(run['text'].replace('\n', LINE_SEPARATOR), char_format(run))
+        cursor.endEditBlock()
+        self.edit.setTextCursor(cursor)
+        self.edit.setCurrentCharFormat(char_format({}))
+        self.edit.setFocus()
+        self.sync()
+
     def set_text(self, text):
         """Обычный текст: каждая строка - абзац."""
         self.set_paragraphs([{'runs': [{'text': line}]} for line in text.splitlines()])
@@ -360,3 +384,4 @@ class FormattedTextEdit(QWidget):
         block = self.edit.textCursor().blockFormat()
         self.align_actions[align_name(block.alignment())].setChecked(True)
         self.indent.setChecked(block.textIndent() > 0)
+

@@ -269,7 +269,11 @@ def save_directory_row(store, kind, raw, row_id=None):
 
 
 def delete_directory_row(store, kind, row_id):
-    store.write(lambda s: s.run('DELETE FROM %s WHERE id = ?' % kind, (row_id,)))
+    def delete(s):
+        if kind == 'topics':
+            s.run('UPDATE templates SET topic_id=NULL, version=version+1 WHERE topic_id=?', (row_id,))
+        s.run('DELETE FROM %s WHERE id = ?' % kind, (row_id,))
+    store.write(delete)
 
 
 def set_signer(store, employee_id, on):
@@ -390,5 +394,6 @@ def month_counts(store, year):
                        'FROM memos WHERE year = ? GROUP BY m', (year,)):
         counts[r['m'] - 1] = r['n']
     return counts
+
 
 
