@@ -3,8 +3,11 @@ import datetime
 import json
 import os
 import tempfile
+from queue import Empty, SimpleQueue
+from threading import Thread
 
 from PyQt5.QtCore import QDate, Qt, QTimer, pyqtSignal
+from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (QAbstractItemView, QComboBox, QDateEdit, QFormLayout,
                              QGridLayout, QHBoxLayout, QHeaderView, QLineEdit, QListWidget,
                              QListWidgetItem, QPlainTextEdit, QScrollArea, QSplitter,
@@ -515,6 +518,11 @@ class RegistryPage(Page):
         self.page = 0
         self.page_count = 1
         self._filter_state = None
+        self._pdf_pending = None
+        self._pdf_results = SimpleQueue()
+        self._pdf_timer = QTimer(self)
+        self._pdf_timer.setInterval(75)
+        self._pdf_timer.timeout.connect(self._apply_pdf_results)
         lay = page_layout(self)
         lay.addWidget(hbox(label('Реестр', 'title'), None,
                            button('Новая СЗ', 'primary', lambda: self.win.navigate('new')),
@@ -653,6 +661,10 @@ class RegistryPage(Page):
             if m['id'] == selected:
                 self.table.selectRow(row)
         self.table.resizeRowsToContents()
+        folders = [(m['id'], s.abs_path('/'.join(scans.memo_folder(s, m)))) for m in memos]
+        self._pdf_pending = (s.root, folders)
+        if not self._pdf_timer.isActive():
+            self._start_pdf_check()
 
         filtered = bool(q or self.topic.currentData() or self.year.currentData()
                         or self.executor_filter.currentData() or self.addressee_filter.currentData()
@@ -672,6 +684,44 @@ class RegistryPage(Page):
         self.prev_btn.setEnabled(self.page > 0)
         self.next_btn.setEnabled(self.page + 1 < self.page_count)
         self.update_buttons()
+
+    def _start_pdf_check(self):
+        root, folders = self._pdf_pending
+        self._pdf_pending = None
+        if not folders:
+            return
+        results = self._pdf_results
+
+        def check():
+            results.put({memo_id: scans.folder_has_pdf(folder, root) for memo_id, folder in folders})
+
+        # Один проход за раз. Из ожидающих запросов остаётся только текущая страница.
+        Thread(target=check, daemon=True).start()
+        self._pdf_timer.start()
+
+    def _apply_pdf_results(self):
+        try:
+            statuses = self._pdf_results.get_nowait()
+        except Empty:
+            return
+        self._pdf_timer.stop()
+        if self._pdf_pending is not None:
+            self._start_pdf_check()
+            return
+        for row in range(self.table.rowCount()):
+            memo_id = self.table.item(row, 0).data(Qt.UserRole)
+            if memo_id not in statuses or statuses[memo_id] is True:
+                continue
+            missing = statuses[memo_id] is False
+            message = ('В папке СЗ нет PDF.' if missing else 'Не удалось проверить наличие PDF.')
+            for col in range(self.table.columnCount()):
+                item = self.table.item(row, col)
+                tooltip = item.toolTip()
+                item.setToolTip('<qt><b>%s</b>%s</qt>' % (
+                    message, '<br><br>' + tooltip[4:-5] if tooltip else ''))
+                item.setData(Qt.AccessibleDescriptionRole, message)
+                if missing:
+                    item.setBackground(QColor('#fdecec'))
 
     def change_page(self, step):
         self.timer.stop()

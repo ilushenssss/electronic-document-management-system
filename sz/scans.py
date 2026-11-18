@@ -79,6 +79,22 @@ def memo_folder(store, memo):
     return split_path(store.output_dir) + [str(memo['year']), docx.file_base_name(memo)]
 
 
+def folder_has_pdf(folder, root):
+    """True/False для доступной папки СЗ, None при ошибке доступа."""
+    try:
+        with os.scandir(folder) as entries:
+            return any(entry.name.lower().endswith('.pdf') and entry.is_file() for entry in entries)
+    except FileNotFoundError:
+        # У записки может ещё не быть папки. Убедимся, что общая папка доступна.
+        try:
+            with os.scandir(root):
+                return False
+        except OSError:
+            return None
+    except OSError:
+        return None
+
+
 def target_path(store, memo, number, in_paper=False):
     return '/'.join(memo_folder(store, memo) + [scan_name(memo, number, in_paper)])
 
