@@ -54,6 +54,21 @@ class TemplateTest(unittest.TestCase):
         self.assertIsNone(templates.get_template(s, linked)['topic_id'])
         self.assertEqual(templates.get_template(s, linked)['version'], 2)
 
+    def test_control_binding_moves_to_one_active_template(self):
+        s = self.store
+        first = templates.save_template(s, data(topic_id=1, for_configuration_control=True))
+        self.assertEqual(templates.configuration_control_template(s)['id'], first)
+        self.assertEqual([r['id'] for r in templates.list_templates(s, True, 2)], [first])
+
+        second = templates.save_template(s, data('Второй', for_configuration_control=True))
+        self.assertEqual(templates.configuration_control_template(s)['id'], second)
+        self.assertFalse(templates.get_template(s, first)['for_configuration_control'])
+        self.assertTrue(templates.get_template(s, first)['active'])
+        with self.assertRaises(StoreError):
+            templates.save_template(s, data(for_configuration_control=True), first, 1)
+        templates.save_template(s, data('Второй', active=False, for_configuration_control=True), second, 1)
+        self.assertIsNone(templates.configuration_control_template(s))
+
     def test_validation_and_conflict_with_second_connection(self):
         s = self.store
         for invalid in (data(name='  '), data(text='  '), data(kind='other'), data(topic_id=999)):
@@ -187,7 +202,8 @@ class TemplatesUiTest(unittest.TestCase):
         page.topic.setCurrentIndex(page.topic.findData(1))
         page.executor.setCurrentIndex(page.executor.findData(1))
         page.body.set_text('Мой текст')
-        with patch.object(self.win, 'confirm', return_value=False):
+        with patch.object(self.win, 'confirm', return_value=False), \
+                patch.object(TemplateFieldsDialog, 'exec_', return_value=QDialog.Accepted):
             page.insert_template()
         self.assertEqual(page.body.plain_text(), 'Мой текст')
         with patch.object(self.win, 'confirm', return_value=True), \
@@ -340,6 +356,55 @@ class TemplatesUiTest(unittest.TestCase):
         self.assertEqual(tab.name.text(), '')
         self.assertFalse(tab.has_unsaved_changes())
         self.assertEqual(dirs.tabs.currentIndex(), 0)
+
+    def test_control_checkbox_inserts_and_template_remains_in_picker(self):
+        from sz.ui.templates import TemplateFieldsDialog
+        self.win.navigate('dirs', 'templates')
+        tab = self.win.pages['dirs'].current()
+        tab.name.setText('Контроль')
+        tab.body.set_text('Прошу проверить {документ}.')
+        tab.for_configuration_control.click()
+        tab.save()
+        row = templates.configuration_control_template(self.win.store)
+        self.assertIsNotNone(row)
+
+        self.win.navigate('new')
+        page = self.picker(row['id'])
+        page.body.set_text('Черновик')
+
+        def fill(dialog):
+            dialog.inputs['документ'].setText('чертёж')
+            return QDialog.Accepted
+
+        with patch.object(TemplateFieldsDialog, 'exec_', return_value=QDialog.Rejected) as dialog:
+            page.configuration_control.click()
+            dialog.assert_called_once()
+            self.assertEqual(page.body.plain_text(), 'Черновик')
+            self.assertTrue(page.configuration_control.isChecked())
+            page.configuration_control.click()
+            dialog.assert_called_once()
+
+        with patch.object(TemplateFieldsDialog, 'exec_', fill), \
+                patch.object(self.win, 'confirm', return_value=True) as confirm:
+            page.configuration_control.click()
+            confirm.assert_called_once()
+            self.assertEqual(page.body.plain_text(), 'Прошу проверить чертёж.')
+            page.clear_form()
+            page.template_picker.setCurrentIndex(page.template_picker.findData(row['id']))
+            page.insert_template()
+            self.assertEqual(page.body.plain_text(), 'Прошу проверить чертёж.')
+            self.assertFalse(page.configuration_control.isChecked())
+
+        raw = memo_data()
+        raw['configuration_control'] = True
+        memo_id, error = actions.create_memo(self.win.store, raw, [1])
+        self.assertIsNone(error)
+        with patch.object(TemplateFieldsDialog, 'exec_', return_value=QDialog.Rejected) as dialog:
+            self.win.navigate('edit', memo_id)
+            dialog.assert_not_called()
+            edit = self.win.pages['edit']
+            self.assertTrue(edit.configuration_control.isChecked())
+            self.assertEqual(edit.body.plain_text(), raw['body'])
 
     def test_field_dialog_validation_and_escape(self):
         from sz.ui.templates import TemplateFieldsDialog

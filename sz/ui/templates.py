@@ -75,10 +75,14 @@ class TemplatesTab(QWidget):
         self.topic = QComboBox()
         self.topic.setAccessibleName('Тематика шаблона')
         self.active = QCheckBox('Доступен для вставки')
+        self.for_configuration_control = QCheckBox('Вставлять по галочке «Для конфигурационного контроля»')
+        self.for_configuration_control.setToolTip('Назначение переносится с прежнего шаблона на этот.')
+        self.active.toggled.connect(self.update_control_binding)
         form.addRow('Название:', self.name)
         form.addRow('Вид:', self.kind)
         form.addRow('Тематика:', self.topic)
         form.addRow('', self.active)
+        form.addRow('', self.for_configuration_control)
         form_lay.addLayout(form)
         form_lay.addWidget(label('Поля в фигурных скобках заполняются при вставке: '
                                 '{наименование}, {количество}, {цель}. '
@@ -122,10 +126,16 @@ class TemplatesTab(QWidget):
     def store(self):
         return self.win.store
 
+    def update_control_binding(self, active):
+        self.for_configuration_control.setEnabled(active)
+        if not active:
+            self.for_configuration_control.setChecked(False)
+
     def data(self):
         return dict(name=self.name.text(), kind=self.kind.currentData(),
                     topic_id=self.topic.currentData(), active=self.active.isChecked(),
-                    paragraphs=self.body.paragraphs())
+                    paragraphs=self.body.paragraphs(),
+                    for_configuration_control=self.for_configuration_control.isChecked())
 
     def state(self):
         return json.dumps(self.data(), ensure_ascii=False, sort_keys=True)
@@ -143,6 +153,7 @@ class TemplatesTab(QWidget):
         self.kind.setCurrentIndex(0)
         self.topic.setCurrentIndex(0)
         self.active.setChecked(True)
+        self.for_configuration_control.setChecked(False)
         self.body.reset()
         self.title.setText('Добавить шаблон')
         self.save_btn.setText('Добавить')
@@ -169,7 +180,7 @@ class TemplatesTab(QWidget):
         self.table.setRowCount(len(self.rows))
         for i, row in enumerate(self.rows):
             values = [row['name'], templates.KINDS[row['kind']], row['topic_name'] or 'Любая',
-                      'Да' if row['active'] else 'Нет']
+                      'По галочке' if row['for_configuration_control'] else ('Да' if row['active'] else 'Нет')]
             for j, value in enumerate(values):
                 item = cell(value, row['id'])
                 item.setToolTip(row['body'])
@@ -203,6 +214,7 @@ class TemplatesTab(QWidget):
         self.kind.setCurrentIndex(self.kind.findData(fresh['kind']))
         self.topic.setCurrentIndex(max(0, self.topic.findData(fresh['topic_id'])))
         self.active.setChecked(bool(fresh['active']))
+        self.for_configuration_control.setChecked(bool(fresh['for_configuration_control']))
         self.body.set_paragraphs(templates.paragraphs(fresh))
         self.title.setText('Изменить шаблон')
         self.save_btn.setText('Сохранить')

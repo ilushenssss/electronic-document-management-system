@@ -64,11 +64,15 @@ def list_templates(store, active_only=False, topic_id=None):
     if active_only:
         where.append('t.active=1')
     if topic_id is not None:
-        where.append('(t.topic_id IS NULL OR t.topic_id=?)')
+        where.append('(t.topic_id IS NULL OR t.topic_id=? OR (t.active=1 AND t.for_configuration_control=1))')
         args.append(topic_id)
     if where:
         sql += ' WHERE ' + ' AND '.join(where)
     return store.all(sql + ' ORDER BY unicode_lower(t.name), t.id', args)
+
+
+def configuration_control_template(store):
+    return store.one('SELECT * FROM templates WHERE active=1 AND for_configuration_control=1')
 
 
 def get_template(store, row_id):
@@ -90,7 +94,9 @@ def save_template(store, raw, row_id=None, expected_version=None):
     if not body.strip():
         raise StoreError('Введите текст шаблона.')
     topic_id = raw.get('topic_id') or None
-    values = [name, kind, body, docx.dump_rich(content), topic_id, int(bool(raw.get('active', True)))]
+    active = bool(raw.get('active', True))
+    linked = active and bool(raw.get('for_configuration_control'))
+    values = [name, kind, body, docx.dump_rich(content), topic_id, int(active), int(linked)]
 
     def save(s):
         if row_id is not None:
@@ -103,11 +109,15 @@ def save_template(store, raw, row_id=None, expected_version=None):
             raise StoreError('Шаблон с таким названием уже существует. Измените название.')
         if topic_id is not None and not s.one('SELECT id FROM topics WHERE id=?', (topic_id,)):
             raise StoreError('Тематика удалена. Выберите другую тематику или «Любая тематика».')
+        if linked:
+            s.run('UPDATE templates SET for_configuration_control=0, version=version+1 '
+                  'WHERE for_configuration_control=1 AND id<>?', (row_id or 0,))
         if row_id is None:
-            s.run('INSERT INTO templates(name,kind,body,body_rich,topic_id,active) VALUES(?,?,?,?,?,?)', values)
+            s.run('INSERT INTO templates(name,kind,body,body_rich,topic_id,active,for_configuration_control) '
+                  'VALUES(?,?,?,?,?,?,?)', values)
             return s.one('SELECT last_insert_rowid() AS id')['id']
         s.run('UPDATE templates SET name=?,kind=?,body=?,body_rich=?,topic_id=?,active=?, '
-              'version=version+1 WHERE id=?', values + [row_id])
+              'for_configuration_control=?,version=version+1 WHERE id=?', values + [row_id])
         return row_id
     return store.write(save)
 

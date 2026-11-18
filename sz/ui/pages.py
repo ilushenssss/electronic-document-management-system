@@ -214,6 +214,7 @@ class NewMemoPage(Page):
                        self.date.dateChanged, self.body.changed, self.attachment.textChanged):
             signal.connect(self.update_preview)
         self.topic.currentIndexChanged.connect(self.reload_template_picker)
+        self.configuration_control.clicked.connect(self.insert_configuration_control_template)
 
     def reload_template_picker(self):
         if not self.store:
@@ -227,6 +228,12 @@ class NewMemoPage(Page):
                    'Выберите шаблон или формулировку' if rows else 'Нет шаблонов — добавьте в справочнике')
         self.template_insert.setEnabled(self.template_picker.currentData() is not None)
 
+    def insert_configuration_control_template(self, checked):
+        if checked and self.store:
+            ok, row = self.win.act(lambda: templates.configuration_control_template(self.store))
+            if ok and row:
+                self.apply_template(row)
+
     def insert_template(self):
         row_id = self.template_picker.currentData()
         if row_id is None:
@@ -239,10 +246,9 @@ class NewMemoPage(Page):
             self.win.flash('Шаблон отключён. Выберите другой шаблон.', 'error')
             self.reload_template_picker()
             return
-        replace = row['kind'] == 'memo'
-        if replace and self.body.plain_text().strip() and not self.win.confirm(
-                'Заменить весь текст СЗ шаблоном «%s»? Вставку можно отменить сочетанием Ctrl+Z.' % row['name']):
-            return
+        self.apply_template(row)
+
+    def apply_template(self, row):
         content = templates.paragraphs(row)
         names = templates.fields(content)
         topic = next((r for r in self.topics if r['id'] == self.topic.currentData()), {})
@@ -257,6 +263,10 @@ class NewMemoPage(Page):
             if dialog.exec_() != QDialog.Accepted:
                 return
             values = dialog.values()
+        replace = row['kind'] == 'memo'
+        if replace and self.body.plain_text().strip() and not self.win.confirm(
+                'Заменить весь текст СЗ шаблоном «%s»? Вставку можно отменить сочетанием Ctrl+Z.' % row['name']):
+            return
         ok, rendered = self.win.act(lambda: templates.render(content, values))
         if ok:
             if self.topic.currentData() is None and row['topic_id']:
