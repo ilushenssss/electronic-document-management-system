@@ -205,6 +205,72 @@ class WindowTest(unittest.TestCase):
         win.confirm = lambda message: True
         app.processEvents()
 
+    def test_registry_checks_pdf_in_current_folders(self):
+        from pathlib import Path
+        from unittest.mock import patch
+        from PyQt5.QtTest import QTest
+        from sz import scans
+        from sz.ui.window import MainWindow
+        from test_paging import fill_registry
+
+        with tempfile.TemporaryDirectory() as root:
+            store = Store(root)
+            store.open()
+            fill_registry(store, 3)
+            store.write(lambda s: s.run('UPDATE memos SET file_path=NULL WHERE number > 1'))
+            folders = [Path(root).joinpath(*scans.memo_folder(store, memo))
+                       for memo in store.all('SELECT * FROM memos ORDER BY number DESC')]
+            store.close()
+            archive = folders[0] / 'Предыдущие версии'
+            archive.mkdir(parents=True)
+            (archive / 'старый.pdf').touch()
+            (folders[0] / 'папка.pdf').mkdir()
+            folders[1].mkdir(parents=True)
+            (folders[1] / 'Скан.PDF').touch()
+
+            original_check = scans.folder_has_pdf
+
+            def check(folder, shared_root):
+                if Path(folder) == folders[2]:
+                    return None
+                return original_check(folder, shared_root)
+
+            app = QApplication.instance() or QApplication([])
+            win = MainWindow(lambda: root)
+            registry = win.pages['list']
+            registry.PAGE_SIZE = 2
+
+            def await_check():
+                for _ in range(100):
+                    if not registry._pdf_timer.isActive():
+                        return
+                    QTest.qWait(20)
+                self.fail('Фоновая проверка PDF не завершилась')
+
+            try:
+                with patch.object(scans, 'folder_has_pdf', side_effect=check) as worker:
+                    self.assertTrue(win.connect())
+                    self.assertEqual(registry.table.rowCount(), 2)
+                    await_check()
+                    checked = [Path(call.args[0]) for call in worker.call_args_list if call.args[1] == root]
+                    self.assertEqual(checked, folders[:2])
+                    for col in range(registry.table.columnCount()):
+                        item = registry.table.item(0, col)
+                        self.assertEqual(item.background().color().name(), '#fdecec')
+                        self.assertIn('В папке СЗ нет PDF', item.toolTip())
+                    self.assertNotIn('нет PDF', registry.table.item(1, 0).toolTip())
+
+                    # Быстрые переходы не должны переносить цвет на чужие строки.
+                    registry.change_page(1)
+                    registry.change_page(-1)
+                    registry.change_page(1)
+                    await_check()
+                    item = registry.table.item(0, 0)
+                    self.assertIn('Не удалось проверить наличие PDF', item.toolTip())
+                    self.assertNotEqual(item.background().color().name(), '#fdecec')
+            finally:
+                win.close()
+
     def test_registry_page_navigation_and_filter_reset(self):
         from sz.ui.window import MainWindow
         from test_paging import fill_registry
@@ -380,4 +446,5 @@ class WindowTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
 
