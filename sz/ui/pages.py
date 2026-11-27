@@ -103,6 +103,12 @@ def scrolled(widget):
 
 # ---------- Новая СЗ ----------
 
+class DateEditWithoutWheel(QDateEdit):
+    def wheelEvent(self, event):
+        # Передаём прокрутку родительской форме.
+        event.ignore()
+
+
 class NewMemoPage(Page):
     def __init__(self, win):
         super().__init__(win)
@@ -141,7 +147,7 @@ class NewMemoPage(Page):
         lay.addWidget(label('Можно выбрать несколько. В записке адресаты идут в порядке выбора.', 'hint', wrap=True))
 
         lay.addWidget(field_label('Дата'))
-        self.date = QDateEdit(QDate.currentDate())
+        self.date = DateEditWithoutWheel(QDate.currentDate())
         self.date.setCalendarPopup(True)
         self.date.setDisplayFormat('dd.MM.yyyy')
         self.date.setMaximumWidth(160)
