@@ -205,6 +205,52 @@ class WindowTest(unittest.TestCase):
         win.confirm = lambda message: True
         app.processEvents()
 
+    def test_memo_print_uses_saved_word_and_reports_process_error(self):
+        from unittest.mock import Mock, patch
+        from sz import actions, word_print
+        from sz.ui.window import MainWindow
+        from test_core import memo_data
+
+        with tempfile.TemporaryDirectory() as root:
+            store = Store(root)
+            store.open()
+            seed(store)
+            memo_id, error = actions.create_memo(store, memo_data(), [1])
+            self.assertIsNone(error)
+            memo = store.one('SELECT file_path FROM memos WHERE id = ?', (memo_id,))
+            path = store.document_path(memo['file_path'])
+            store.close()
+
+            app = QApplication.instance() or QApplication([])
+            win = MainWindow(lambda: root)
+            try:
+                process = Mock()
+                process.poll.side_effect = [None, 0, 1]
+                with patch.object(word_print, 'SUPPORTED', True), \
+                        patch.object(word_print, 'start', return_value=process) as start:
+                    self.assertTrue(win.connect())
+                    win.navigate('memo', memo_id)
+                    card = win.pages['memo']
+                    self.assertTrue(card.print_btn.isEnabled())
+                    card.print_btn.click()
+                    card.print_btn.click()
+                    start.assert_called_once_with(path)
+                    card.check_print()
+                    self.assertFalse(card.print_btn.isEnabled())
+                    card.check_print()
+                    self.assertTrue(card.print_btn.isEnabled())
+                    card.print_btn.click()
+                    card.check_print()
+                    self.assertTrue(card.print_btn.isEnabled())
+                    self.assertIn('Не удалось запустить Microsoft Word', win.flash_label.text())
+
+                    os.remove(path)
+                    card.print_btn.click()
+                    self.assertEqual(start.call_count, 2)
+                    self.assertFalse(card.print_btn.isEnabled())
+            finally:
+                win.close()
+
     def test_registry_checks_pdf_in_current_folders(self):
         from pathlib import Path
         from unittest.mock import patch
