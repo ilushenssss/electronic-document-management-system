@@ -1,4 +1,5 @@
 """Шаблоны и подстановка полей без выполнения кода и изменения исходного шаблона."""
+import json
 import re
 
 from . import docx
@@ -21,6 +22,30 @@ def fields(content):
             name = match.group(1).strip()
             found.setdefault(name.casefold(), name)
     return found
+
+
+def clean_field_options(content, options):
+    """Храним настройки только для полей, которые есть в тексте шаблона."""
+    clean = {}
+    if not isinstance(options, dict):
+        return clean
+    for key in fields(content):
+        entry = options.get(key)
+        if not isinstance(entry, dict):
+            continue
+        values = {name: entry[name].strip() for name in ('question', 'default')
+                  if isinstance(entry.get(name), str) and entry[name].strip()}
+        if values:
+            clean[key] = values
+    return clean
+
+
+def field_options(row, content):
+    try:
+        options = json.loads(row.get('field_options') or '{}')
+    except ValueError:
+        return {}
+    return clean_field_options(content, options)
 
 
 def render(content, values):
@@ -96,7 +121,8 @@ def save_template(store, raw, row_id=None, expected_version=None):
     topic_id = raw.get('topic_id') or None
     active = bool(raw.get('active', True))
     linked = active and bool(raw.get('for_configuration_control'))
-    values = [name, kind, body, docx.dump_rich(content), topic_id, int(active), int(linked)]
+    options = json.dumps(clean_field_options(content, raw.get('field_options')), ensure_ascii=False)
+    values = [name, kind, body, docx.dump_rich(content), topic_id, int(active), int(linked), options]
 
     def save(s):
         if row_id is not None:
@@ -113,11 +139,11 @@ def save_template(store, raw, row_id=None, expected_version=None):
             s.run('UPDATE templates SET for_configuration_control=0, version=version+1 '
                   'WHERE for_configuration_control=1 AND id<>?', (row_id or 0,))
         if row_id is None:
-            s.run('INSERT INTO templates(name,kind,body,body_rich,topic_id,active,for_configuration_control) '
-                  'VALUES(?,?,?,?,?,?,?)', values)
+            s.run('INSERT INTO templates(name,kind,body,body_rich,topic_id,active,for_configuration_control,field_options) '
+                  'VALUES(?,?,?,?,?,?,?,?)', values)
             return s.one('SELECT last_insert_rowid() AS id')['id']
         s.run('UPDATE templates SET name=?,kind=?,body=?,body_rich=?,topic_id=?,active=?, '
-              'for_configuration_control=?,version=version+1 WHERE id=?', values + [row_id])
+              'for_configuration_control=?,field_options=?,version=version+1 WHERE id=?', values + [row_id])
         return row_id
     return store.write(save)
 

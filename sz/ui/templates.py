@@ -10,34 +10,70 @@ from .common import button, hbox, label, panel
 from .editor import FormattedTextEdit
 
 
-class TemplateFieldsDialog(QDialog):
-    def __init__(self, names, defaults, parent=None):
+class FieldsDialog(QDialog):
+    def __init__(self, title, hint, height, action, form_layout, parent):
         super().__init__(parent)
         from .pages import scrolled
-        self.setWindowTitle('Заполнить поля шаблона')
-        self.resize(500, min(560, 180 + len(names) * 45))
+        self.setWindowTitle(title)
+        self.resize(560, min(560, height))
         lay = QVBoxLayout(self)
-        lay.addWidget(label('Значения будут вставлены в текст СЗ. Все поля обязательны.', 'hint', wrap=True))
+        lay.addWidget(label(hint, 'hint', wrap=True))
         form_widget = QWidget()
-        form = QFormLayout(form_widget)
-        self.inputs = {}
-        for key, name in names.items():
-            edit = QLineEdit(defaults.get(key, ''))
-            edit.setAccessibleName(name)
-            form.addRow(name + ':', edit)
-            self.inputs[key] = edit
+        self.form = form_layout(form_widget)
         lay.addWidget(scrolled(form_widget), 1)
         self.error = label('', 'warn', wrap=True)
         self.error.hide()
         lay.addWidget(self.error)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.button(QDialogButtonBox.Ok).setText('Вставить')
+        buttons.button(QDialogButtonBox.Ok).setText(action)
         buttons.button(QDialogButtonBox.Cancel).setText('Отмена')
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         lay.addWidget(buttons)
+
+
+class TemplateFieldsDialog(FieldsDialog):
+    def __init__(self, names, defaults, parent=None, options=None):
+        super().__init__('Заполнить поля шаблона',
+                         'Введите свои ответы или отметьте «По умолчанию», где оно задано.',
+                         160 + len(names) * 75, 'Вставить', QVBoxLayout, parent)
+        form = self.form
+        self.inputs = {}
+        self.use_default = {}
+        for key, name in names.items():
+            settings = (options or {}).get(key, {})
+            question = settings.get('question', name + ':')
+            caption = label(question, wrap=True)
+            caption.setTextFormat(Qt.PlainText)
+            edit = QLineEdit(defaults.get(key, ''))
+            edit.setAccessibleName(question)
+            caption.setBuddy(edit)
+            form.addWidget(caption)
+            if 'default' in settings:
+                toggle = QCheckBox('По умолчанию')
+                toggle.setAccessibleName('По умолчанию. ' + question)
+                self.use_default[key] = toggle
+                self.bind_default(toggle, edit, settings['default'])
+                form.addWidget(hbox(edit, toggle, stretch_end=False))
+            else:
+                form.addWidget(edit)
+            self.inputs[key] = edit
+        form.addStretch()
         if self.inputs:
             next(iter(self.inputs.values())).setFocus()
+
+    @staticmethod
+    def bind_default(toggle, edit, default):
+        manual = edit.text()
+
+        def use_default(checked):
+            nonlocal manual
+            if checked:
+                manual = edit.text()
+            edit.setReadOnly(checked)
+            edit.setText(default if checked else manual)
+
+        toggle.toggled.connect(use_default)
 
     def values(self):
         return {key: edit.text().strip() for key, edit in self.inputs.items()}
@@ -50,6 +86,31 @@ class TemplateFieldsDialog(QDialog):
                 edit.setFocus()
                 return
         super().accept()
+
+
+class TemplateFieldOptionsDialog(FieldsDialog):
+    def __init__(self, names, options, parent=None):
+        super().__init__('Поля шаблона',
+                         'Задайте вопрос и при необходимости значение по умолчанию для каждого поля.',
+                         145 + len(names) * 110, 'Применить', QFormLayout, parent)
+        form = self.form
+        self.inputs = {}
+        for key, name in names.items():
+            caption = label('{' + name + '}', 'fieldLabel', wrap=True)
+            caption.setTextFormat(Qt.PlainText)
+            form.addRow(caption)
+            settings = options.get(key, {})
+            self.inputs[key] = {}
+            for field, title in (('question', 'Вопрос'), ('default', 'Значение по умолчанию')):
+                edit = QLineEdit(settings.get(field, ''))
+                edit.setAccessibleName(title + '. ' + name)
+                form.addRow(title, edit)
+                self.inputs[key][field] = edit
+        next(iter(self.inputs.values()))['question'].setFocus()
+
+    def values(self):
+        return {key: {name: edit.text() for name, edit in inputs.items()}
+                for key, inputs in self.inputs.items()}
 
 
 class TemplatesTab(QWidget):
@@ -92,13 +153,16 @@ class TemplatesTab(QWidget):
         self.body.setMinimumHeight(200)
         self.body.edit.setAccessibleName('Текст шаблона')
         form_lay.addWidget(self.body)
+        self.fields_btn = button('Настроить поля…', on_click=self.configure_fields)
+        self.fields_btn.setToolTip('Вопросы и значения по умолчанию для полей в фигурных скобках.')
+        self.body.changed.connect(self.update_fields_button)
         self.save_btn = button('Добавить', 'primary', self.save)
         self.cancel_btn = button('Отмена', on_click=self.cancel)
         top = QWidget()
         top_lay = QVBoxLayout(top)
         top_lay.setContentsMargins(0, 0, 0, 0)
         top_lay.addWidget(scrolled(box), 1)
-        top_lay.addWidget(hbox(self.save_btn, self.cancel_btn))
+        top_lay.addWidget(hbox(self.save_btn, self.fields_btn, self.cancel_btn))
         self.table = read_only_table(['Название', 'Вид', 'Тематика', 'Доступен'])
         self.table.setAccessibleName('Шаблоны СЗ')
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
@@ -131,10 +195,22 @@ class TemplatesTab(QWidget):
         if not active:
             self.for_configuration_control.setChecked(False)
 
+    def update_fields_button(self):
+        self.fields_btn.setEnabled(bool(templates.fields(self.body.paragraphs())))
+
+    def configure_fields(self):
+        content = self.body.paragraphs()
+        names = templates.fields(content)
+        if not names:
+            return
+        dialog = TemplateFieldOptionsDialog(names, self.field_options, self)
+        if dialog.exec_() == QDialog.Accepted:
+            self.field_options = templates.clean_field_options(content, dialog.values())
+
     def data(self):
         return dict(name=self.name.text(), kind=self.kind.currentData(),
                     topic_id=self.topic.currentData(), active=self.active.isChecked(),
-                    paragraphs=self.body.paragraphs(),
+                    paragraphs=self.body.paragraphs(), field_options=self.field_options,
                     for_configuration_control=self.for_configuration_control.isChecked())
 
     def state(self):
@@ -154,6 +230,7 @@ class TemplatesTab(QWidget):
         self.topic.setCurrentIndex(0)
         self.active.setChecked(True)
         self.for_configuration_control.setChecked(False)
+        self.field_options = {}
         self.body.reset()
         self.title.setText('Добавить шаблон')
         self.save_btn.setText('Добавить')
@@ -215,7 +292,9 @@ class TemplatesTab(QWidget):
         self.topic.setCurrentIndex(max(0, self.topic.findData(fresh['topic_id'])))
         self.active.setChecked(bool(fresh['active']))
         self.for_configuration_control.setChecked(bool(fresh['for_configuration_control']))
-        self.body.set_paragraphs(templates.paragraphs(fresh))
+        content = templates.paragraphs(fresh)
+        self.field_options = templates.field_options(fresh, content)
+        self.body.set_paragraphs(content)
         self.title.setText('Изменить шаблон')
         self.save_btn.setText('Сохранить')
         self.baseline = self.state()

@@ -268,7 +268,8 @@ class NewMemoPage(Page):
                     'исполнитель': executor.get('full_name', ''), 'тематика': topic.get('name', '')}
         values = {}
         if names:
-            dialog = TemplateFieldsDialog(names, defaults, self)
+            options = templates.field_options(row, content)
+            dialog = TemplateFieldsDialog(names, defaults, self, options=options)
             if dialog.exec_() != QDialog.Accepted:
                 return
             values = dialog.values()

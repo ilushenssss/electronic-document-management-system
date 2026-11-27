@@ -406,6 +406,56 @@ class TemplatesUiTest(unittest.TestCase):
             self.assertTrue(edit.configuration_control.isChecked())
             self.assertEqual(edit.body.plain_text(), raw['body'])
 
+    def test_field_questions_and_opt_in_defaults_round_trip(self):
+        from sz.ui.templates import TemplateFieldOptionsDialog, TemplateFieldsDialog
+
+        self.win.navigate('dirs', 'templates')
+        tab = self.win.pages['dirs'].current()
+        tab.name.setText('Шаблон с вопросами')
+        self.assertFalse(tab.fields_btn.isEnabled())
+        tab.body.set_text('Прошу проверить {документ} для {цель}.')
+        self.assertTrue(tab.fields_btn.isEnabled())
+
+        def configure(dialog):
+            dialog.inputs['документ']['question'].setText('Что нужно проверить?')
+            dialog.inputs['документ']['default'].setText('чертёж')
+            dialog.inputs['цель']['question'].setText('Для чего?')
+            return QDialog.Accepted
+
+        with patch.object(TemplateFieldOptionsDialog, 'exec_', configure):
+            tab.fields_btn.click()
+        tab.save()
+        tab.table.selectRow(0)
+        tab.edit_selected()
+        self.assertEqual(tab.field_options['документ'],
+                         {'question': 'Что нужно проверить?', 'default': 'чертёж'})
+
+        self.win.navigate('new')
+        page = self.picker(tab.edit_id)
+
+        def fill(dialog):
+            edit = dialog.inputs['документ']
+            toggle = dialog.use_default['документ']
+            self.assertEqual(edit.accessibleName(), 'Что нужно проверить?')
+            self.assertFalse(toggle.isChecked())
+            self.assertEqual(edit.text(), '')
+            self.assertNotIn('цель', dialog.use_default)
+            edit.setText('смета')
+            toggle.click()
+            self.assertTrue(edit.isReadOnly())
+            self.assertEqual(edit.text(), 'чертёж')
+            toggle.click()
+            self.assertFalse(edit.isReadOnly())
+            self.assertEqual(edit.text(), 'смета')
+            toggle.click()
+            dialog.inputs['цель'].setText('согласования')
+            dialog.accept()
+            return dialog.result()
+
+        with patch.object(TemplateFieldsDialog, 'exec_', fill):
+            page.insert_template()
+        self.assertEqual(page.body.plain_text(), 'Прошу проверить чертёж для согласования.')
+
     def test_field_dialog_validation_and_escape(self):
         from sz.ui.templates import TemplateFieldsDialog
         dialog = TemplateFieldsDialog({'цель': 'Цель', 'дата': 'Дата'}, {'дата': '01.01.2026'})
