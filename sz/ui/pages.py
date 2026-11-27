@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import (QAbstractItemView, QComboBox, QDateEdit, QFormLayou
                              QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
                              QDialog, QTextBrowser, QFrame, QFileDialog, QCheckBox)
 
-from .. import actions, docx, scans, templates
+from .. import actions, docx, scans, templates, word_print
 from ..store import DEFAULT_NUMBER_PREFIX, DEFAULT_OUTPUT_DIR
 from .common import (BarList, ColumnChart, SheetView, button, esc, hbox, label, panel,
                      sheet_frame, show_in_folder, open_file)
@@ -104,6 +104,12 @@ def scrolled(widget):
 
 # ---------- Новая СЗ ----------
 
+class DateEditWithoutWheel(QDateEdit):
+    def wheelEvent(self, event):
+        # Передаём прокрутку родительской форме.
+        event.ignore()
+
+
 class NewMemoPage(Page):
     def __init__(self, win):
         super().__init__(win)
@@ -142,7 +148,7 @@ class NewMemoPage(Page):
         lay.addWidget(label('Можно выбрать несколько. В записке адресаты идут в порядке выбора.', 'hint', wrap=True))
 
         lay.addWidget(field_label('Дата'))
-        self.date = QDateEdit(QDate.currentDate())
+        self.date = DateEditWithoutWheel(QDate.currentDate())
         self.date.setCalendarPopup(True)
         self.date.setDisplayFormat('dd.MM.yyyy')
         self.date.setMaximumWidth(160)
@@ -948,6 +954,11 @@ class MemoPage(Page):
         self.memo_id = None
         self.memo = None
         self.sed_dirty = False
+        self.word_path = None
+        self.print_process = None
+        self.print_timer = QTimer(self)
+        self.print_timer.setInterval(250)
+        self.print_timer.timeout.connect(self.check_print)
 
         side = QWidget()
         lay = page_layout(side)
@@ -990,10 +1001,12 @@ class MemoPage(Page):
         lay.addWidget(self.drop_area)
 
         self.word_btn = button('Открыть Word', 'primary', self.open_word)
+        self.print_btn = button('Печать…', on_click=self.print_word)
+        self.update_print_button()
         self.folder_btn = button('Показать в папке', on_click=self.show_folder)
         self.edit_btn = button('Редактировать', on_click=lambda: self.win.navigate('edit', self.memo_id))
         self.delete_btn = button('Удалить из реестра', 'danger', self.delete)
-        for b in (self.word_btn, self.folder_btn, self.edit_btn, self.delete_btn):
+        for b in (self.word_btn, self.print_btn, self.folder_btn, self.edit_btn, self.delete_btn):
             lay.addWidget(b)
         lay.addStretch(1)
 
@@ -1036,6 +1049,8 @@ class MemoPage(Page):
         self.open_scan_btn.setEnabled(False)
         for b in (self.word_btn, self.folder_btn, self.edit_btn, self.delete_btn):
             b.setEnabled(bool(m))
+        self.word_path = s.document_path(m['file_path']) if m else None
+        self.update_print_button()
         if not m:
             self.reg.setText('Записки нет в реестре')
             self.details.setText('Её удалили. Вернитесь в реестр.')
@@ -1051,7 +1066,7 @@ class MemoPage(Page):
         self.open_scan_btn.setEnabled(bool(scan))
         self.scan_status.setText(os.path.basename(scan) if scan else 'Скан PDF не найден в папке СЗ.')
         addressees = s.memo_addressees(m['id'])
-        path = s.document_path(m['file_path'])
+        path = self.word_path
         rows = [
             ('Дата', esc(docx.format_date(m['memo_date']))),
             ('Тематика', esc(m['topic_name'])),
@@ -1084,6 +1099,46 @@ class MemoPage(Page):
 
     def open_word(self):
         self.win.open_memo_document(self.memo_id)
+
+    def update_print_button(self):
+        if self.print_process is not None:
+            hint = 'Завершите печать или закройте диалог Word.'
+        elif not word_print.SUPPORTED:
+            hint = 'Для печати нужен Microsoft Word в Windows.'
+        elif not self.word_path:
+            hint = 'Сначала сформируйте документ Word.'
+        else:
+            hint = ''
+        self.print_btn.setEnabled(not hint)
+        self.print_btn.setToolTip(hint)
+
+    def print_word(self):
+        if not self.print_btn.isEnabled():
+            return
+        if not os.path.isfile(self.word_path):
+            self.word_path = None
+            self.update_print_button()
+            self.win.flash('Документ Word не найден. Сохраните СЗ заново для его формирования.', 'error')
+            return
+        try:
+            self.print_process = word_print.start(self.word_path)
+        except OSError:
+            self.win.flash('Не удалось запустить печать. Проверьте наличие Windows PowerShell.', 'error')
+            return
+        self.update_print_button()
+        self.print_timer.start()
+
+    def check_print(self):
+        status = self.print_process.poll()
+        if status is None:
+            return
+        self.print_timer.stop()
+        self.print_process = None
+        self.update_print_button()
+        if status == 1:
+            self.win.flash('Не удалось запустить Microsoft Word. Проверьте, что он установлен.', 'error')
+        elif status != 0:
+            self.win.flash('Не удалось открыть документ или напечатать СЗ. Попробуйте печать из Word.', 'error')
 
     def sed_edited(self):
         self.sed_dirty = True
