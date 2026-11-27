@@ -251,6 +251,62 @@ class WindowTest(unittest.TestCase):
             finally:
                 win.close()
 
+    def test_not_issued_persists_and_takes_precedence_over_missing_pdf(self):
+        from unittest.mock import patch
+        from PyQt5.QtTest import QTest
+        from sz import actions
+        from sz.store import StoreError
+        from sz.ui.window import MainWindow
+        from test_core import memo_data
+
+        with tempfile.TemporaryDirectory() as root:
+            store = Store(root)
+            store.open()
+            seed(store)
+            memo_id, error = actions.create_memo(store, memo_data(), [1])
+            self.assertIsNone(error)
+            store.close()
+
+            app = QApplication.instance() or QApplication([])
+            win = MainWindow(lambda: root)
+            try:
+                self.assertTrue(win.connect())
+                win.navigate('memo', memo_id)
+                card = win.pages['memo']
+                self.assertFalse(card.not_issued.isChecked())
+                card.not_issued.click()
+                self.assertFalse(card.has_unsaved_changes())
+                with patch.object(actions, 'set_memo_not_issued', side_effect=StoreError('Ошибка записи')):
+                    card.not_issued.click()
+                self.assertTrue(card.not_issued.isChecked())
+                card.reload()
+                self.assertTrue(card.not_issued.isChecked())
+
+                win.navigate('list')
+                registry = win.pages['list']
+
+                def assert_row(color, marked):
+                    for _ in range(100):
+                        if not registry._pdf_timer.isActive():
+                            break
+                        QTest.qWait(20)
+                    self.assertFalse(registry._pdf_timer.isActive())
+                    for col in range(registry.table.columnCount()):
+                        item = registry.table.item(0, col)
+                        self.assertEqual(item.background().color().name(), color)
+                        self.assertEqual('Не выдавалась' in item.toolTip(), marked)
+                        self.assertIn('В папке СЗ нет PDF', item.toolTip())
+
+                assert_row('#e9ebef', True)
+                win.navigate('memo', memo_id)
+                card.not_issued.click()
+                card.reload()
+                self.assertFalse(card.not_issued.isChecked())
+                win.navigate('list')
+                assert_row('#fdecec', False)
+            finally:
+                win.close()
+
     def test_registry_checks_pdf_in_current_folders(self):
         from pathlib import Path
         from unittest.mock import patch

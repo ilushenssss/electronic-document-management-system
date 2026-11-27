@@ -102,6 +102,7 @@ ADDED_COLUMNS = [
     ('templates', 'for_configuration_control', 'INTEGER NOT NULL DEFAULT 0'),
     ('memos', 'configuration_control', 'INTEGER NOT NULL DEFAULT 0'),
     ('memos', 'in_paper', 'INTEGER NOT NULL DEFAULT 0'),
+    ('memos', 'not_issued', 'INTEGER NOT NULL DEFAULT 0'),
     ('memos', 'sed_number', "TEXT NOT NULL DEFAULT ''"),
     ('memos', 'scan_path', "TEXT NOT NULL DEFAULT ''"),
     ('memos', 'reg_number', 'TEXT'),

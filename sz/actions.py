@@ -227,6 +227,14 @@ def update_memo(store, snapshot, expected_version, data, addressee_keys):
     return store.write(update, after_commit=publish)
 
 
+def set_memo_not_issued(store, memo_id, checked):
+    def save(s):
+        cursor = s.db.execute('UPDATE memos SET not_issued = ? WHERE id = ?', (int(checked), memo_id))
+        if not cursor.rowcount:
+            raise StoreError('СЗ удалена из реестра.')
+    store.write(save)
+
+
 def delete_memo(store, memo_id):
     def delete(s):
         s.run('DELETE FROM memo_addressees WHERE memo_id = ?', (memo_id,))

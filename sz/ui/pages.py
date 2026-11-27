@@ -592,6 +592,7 @@ class EditMemoPage(NewMemoPage):
 class RegistryPage(Page):
     BODY_PREVIEW_LIMIT = 200  # символов текста до многоточия
     PAGE_SIZE = 25
+    NOT_ISSUED_ROLE = Qt.UserRole + 1
     TOPIC_WIDTH_CHARS = 10  # ориентир для ширины колонки тематики
 
     def __init__(self, win):
@@ -738,6 +739,9 @@ class RegistryPage(Page):
                 item = cell(value, m['id'])
                 item.setToolTip(('<qt><b>Тематика:</b> %s<br><br>%s</qt>' % (
                     esc(m['topic_name']), esc(body).replace('\n', '<br>'))) if col == 3 else tooltip)
+                if m['not_issued']:
+                    item.setData(self.NOT_ISSUED_ROLE, True)
+                    self.mark_cell(item, 'Не выдавалась', '#e9ebef')
                 self.table.setItem(row, col, item)
             if m['id'] == selected:
                 self.table.selectRow(row)
@@ -797,12 +801,18 @@ class RegistryPage(Page):
             message = ('В папке СЗ нет PDF.' if missing else 'Не удалось проверить наличие PDF.')
             for col in range(self.table.columnCount()):
                 item = self.table.item(row, col)
-                tooltip = item.toolTip()
-                item.setToolTip('<qt><b>%s</b>%s</qt>' % (
-                    message, '<br><br>' + tooltip[4:-5] if tooltip else ''))
-                item.setData(Qt.AccessibleDescriptionRole, message)
-                if missing:
-                    item.setBackground(QColor('#fdecec'))
+                color = '#fdecec' if missing and not item.data(self.NOT_ISSUED_ROLE) else None
+                self.mark_cell(item, message, color)
+
+    @staticmethod
+    def mark_cell(item, message, color=None):
+        tooltip = item.toolTip()
+        item.setToolTip('<qt><b>%s</b>%s</qt>' % (
+            esc(message), '<br><br>' + tooltip[4:-5] if tooltip else ''))
+        previous = item.data(Qt.AccessibleDescriptionRole)
+        item.setData(Qt.AccessibleDescriptionRole, ' · '.join(filter(None, (previous, message))))
+        if color:
+            item.setBackground(QColor(color))
 
     def change_page(self, step):
         self.timer.stop()
@@ -971,6 +981,9 @@ class MemoPage(Page):
         self.details = label('', wrap=True)
         self.details.setTextInteractionFlags(Qt.TextSelectableByMouse)
         box_lay.addWidget(self.details)
+        self.not_issued = QCheckBox('Не выдавалась')
+        self.not_issued.clicked.connect(self.save_not_issued)
+        box_lay.addWidget(self.not_issued)
         lay.addWidget(box)
 
         scan_box, scan_lay = panel()
@@ -1047,6 +1060,8 @@ class MemoPage(Page):
         self.save_sed_btn.setEnabled(bool(m))
         self.sed_number.setEnabled(bool(m))
         self.paper.setEnabled(bool(m))
+        self.not_issued.setEnabled(bool(m))
+        self.not_issued.setChecked(bool(m and m['not_issued']))
         self.open_scan_btn.setEnabled(False)
         for b in (self.word_btn, self.folder_btn, self.edit_btn, self.delete_btn):
             b.setEnabled(bool(m))
@@ -1141,6 +1156,15 @@ class MemoPage(Page):
         elif status != 0:
             self.win.flash('Не удалось открыть документ или напечатать СЗ. Попробуйте печать из Word.', 'error')
 
+    def save_not_issued(self, checked):
+        ok, _ = self.win.act(lambda: actions.set_memo_not_issued(self.store, self.memo_id, checked))
+        if ok:
+            self.memo['not_issued'] = int(checked)
+            self.win.flash('Отметка «Не выдавалась» установлена.' if checked else
+                           'Отметка «Не выдавалась» снята.')
+        else:
+            self.not_issued.setChecked(bool(self.memo['not_issued']))
+
     def sed_edited(self):
         self.sed_dirty = True
 
@@ -1156,6 +1180,13 @@ class MemoPage(Page):
     def on_external_change(self):
         if not self.sed_dirty:
             self.reload()
+        else:
+            # Обновляем отметку независимо от несохранённого номера СЭД.
+            row = self.store.one('SELECT not_issued FROM memos WHERE id = ?', (self.memo_id,))
+            self.not_issued.setEnabled(row is not None)
+            if row:
+                self.memo['not_issued'] = row['not_issued']
+            self.not_issued.setChecked(bool(row and row['not_issued']))
 
     def choose_scan(self):
         source, _ = QFileDialog.getOpenFileName(self, 'Выберите скан СЗ', '', 'PDF (*.pdf)')
